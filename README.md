@@ -1,6 +1,6 @@
 # CellarTracker Write MCP
 
-An **unofficial, local-only** MCP server that relocates individual bottles in CellarTracker, with fresh inventory checks and verified outcomes.
+An **unofficial, local-only** MCP server that moves bottles and logs consumption in CellarTracker, with fresh inventory checks and verified outcomes.
 
 Say “move all bottles from bin 23 to bin 24.” The assistant plans against exact bottle IDs, submits the relocation using your authenticated CellarTracker session, and checks that those bottles reached their destination.
 
@@ -10,16 +10,17 @@ Say “move all bottles from bin 23 to bin 24.” The assistant plans against ex
 
 Export-based CellarTracker MCP servers make your cellar available to an assistant for searches, summaries, and recommendations. Their read-only tools can help you decide what to move, but cannot save that move in CellarTracker.
 
-**This server adds writes to CellarTracker itself.** It uses the website's authenticated relocation workflow to update the location and bin of individual bottles, then reads the inventory again to verify the change.
+**This server adds writes to CellarTracker itself.** It uses the website's authenticated workflows to update bottle locations/bins or record consumption, then verifies the result against current inventory and, for consumption, the recorded history.
 
 | Capability | Export-based, read-only MCP servers | This server |
 | --- | --- | --- |
 | Read cellar data | Read exported inventory | Read current individual-bottle inventory from the website |
 | Move bottles between bins or locations | Cannot save changes | Submit relocations for exact bottle IDs |
+| Log consumption | Cannot save changes | Record the date, reason, and consumption note for exact bottles |
 | Verify a move | No write operation to verify | Check each selected bottle's destination after writing |
 | Recover from an interrupted move | Not applicable to writes | Record outcomes and inspect current positions without automatically replaying writes |
 
-The current write scope is **bottle relocation**. Adding wine, logging consumption, editing tasting notes, and deleting bottles are not implemented. This can complement an existing MCP used for wine discovery or analysis. It relies on undocumented website endpoints, so compatibility may change when CellarTracker updates its site.
+The current write scope is **bottle relocation and consumption logging**. Adding wine, editing tasting notes, recording sale revenue, and permanently deleting bottles are not implemented. This can complement an existing MCP used for wine discovery or analysis. It relies on undocumented website endpoints, so compatibility may change when CellarTracker updates its site.
 
 ## Architecture
 
@@ -30,7 +31,7 @@ MCP client → local Node.js stdio server → direct HTTPS requests using a priv
 
 Direct cookie authentication is the default when a session file is present. It works without the companion or an open Chrome window. Cookies stay in a private file on your machine and are sent only to `https://www.cellartracker.com`. Redirects are not followed. Server-issued refresh cookies are retained; when the session expires, import a fresh session.
 
-The optional Chrome companion uses an existing signed-in tab instead. It is useful if direct requests stop working due to browser challenges. It supports only inventory and relocation operations, never arbitrary URLs or scripts.
+The optional Chrome companion uses an existing signed-in tab instead. It is useful if direct requests stop working due to browser challenges. It supports only the fixed inventory, relocation, and consumption operations, never arbitrary URLs or scripts.
 
 ## Local setup (cookie authentication)
 
@@ -95,10 +96,15 @@ Run only **one** instance per state directory at a time; a process lock prevents
 | --- | --- |
 | `connection_status` | Checks transport availability, not login |
 | `list_bins` | Fresh complete inventory summarized by exact location/bin |
-| `list_bottles` | Fresh inventory, optional exact location/bin and wine substring; paginated results |
+| `list_bottles` | Fresh inventory including bottle ID, wine ID and size; exact location/bin/wine ID/size or wine substring filters; paginated results |
 | `plan_bin_move` | Persists a 15-minute plan; does not change CellarTracker |
 | `execute_bin_move` | Moves the plan's exact bottle IDs and verifies the result |
+| `plan_bottle_move` | Plans a move for exact bottle IDs, or a quantity of one exact wine |
+| `execute_bottle_move` | Executes a selected-bottle or bin move plan |
 | `get_move_status` | Returns saved outcome plus fresh positions for the selected IDs |
+| `plan_bottle_consumption` | Plans consumption for exact bottle IDs, or a quantity of one exact wine |
+| `execute_bottle_consumption` | Logs consumption and verifies inventory removal plus matching history |
+| `get_consumption_status` | Returns saved outcome and fresh consumption verification |
 
 Example tool sequence (the assistant can perform both calls from one clear user instruction):
 
@@ -110,6 +116,30 @@ Pass the returned `id` to `execute_bin_move` as `operation_id`. A plan is a tech
 
 Labels are exact strings: `23` and `023` are different. Omitting `location` works only when the source bin occurs in one location. The original location is preserved unless `destination_location` is explicitly supplied. An empty destination bin deliberately clears the bin field.
 
+### Selected bottles and quantities
+
+For `plan_bottle_move`, select either `bottle_ids` from `list_bottles`, or `wine_id` plus `quantity`. Quantity selection can be narrowed by exact `location`, `bin`, and `size`; it must resolve to one location/bin/size group. It selects ascending numeric bottle IDs and freezes those IDs in the plan. Wine names are for searching, not write identifiers.
+
+```json
+{"wine_id":"100","quantity":2,"location":"Example cellar","bin":"23","destination_bin":"24"}
+```
+
+Pass the plan's `id` to `execute_bottle_move`. Explicit bottle IDs can span source bins and locations; each original location is preserved unless `destination_location` is supplied.
+
+### Consumption
+
+`plan_bottle_consumption` accepts the same selection primitives plus an absolute `date`, a `reason` (default `drank`), and an optional single-line `note` of up to 512 characters:
+
+```json
+{"bottle_ids":["111111111"],"date":"2026-09-15","reason":"drank","note":"Dinner with friends"}
+```
+
+Pass its `id` to `execute_bottle_consumption`. Resolve relative dates using the user's intended timezone. Reasons are `drank`, `gift`, `restaurant`, `sold_or_traded`, `spoiled_returned`, `tasted`, `broken`, `spoiled`, `missing`, `donated`, `family`, `friends_cellar`, `cooking`, and `tasting_event`. Each removes the selected bottles from current inventory and records their disposition. The consumption note is not a published tasting note.
+
+### Composing operations
+
+Undo and cellar reorganization are composed by the LLM from these primitives. To reverse a move, inspect `get_move_status`, select only the intended bottles still at the destination, and plan new moves to their saved original positions. To swap bins, snapshot both sets of bottle IDs before moving either set, then move each set explicitly. Moving the entire second bin after the first move would also move the bottles just added to it.
+
 ## Correctness and recovery
 
 - Reads all inventory pages and validates account identity, totals, pagination and unique bottle IDs.
@@ -118,8 +148,11 @@ Labels are exact strings: `23` and `023` are different. Omitting `location` work
 - Persists the operation before writing and verifies the exact IDs after each batch.
 - Never automatically replays a submitted operation. A repeated operation ID returns the recorded state.
 - A lost response does not imply failure: read-back may establish success.
+- Consumption success requires both absence from inventory and a unique history record for each bottle with the requested date, reason, and note. Disappearance alone is not success.
 
 If an operation is `partial`, `unknown`, or `running` after a crash, use `get_move_status`. Inspect `observedNow.movedIds`, `remainingIds`, and `conflictIds`; resolve any in-flight request before deliberately planning recovery. Do not automatically create a new plan as a retry. There is no automatic rollback or atomic transaction across batches.
+
+For consumption, use `get_consumption_status` and inspect `observedNow.consumedIds`, `remainingIds`, and `conflictIds` with the same recovery discipline.
 
 The website has no exposed compare-and-swap operation. A concurrent manual edit/account switch between the last read and the write is still possible. Avoid editing the same bottles while a move runs. A deliberate undo is a new move after reviewing current state, not a blind reversal of all bottles in the destination bin.
 

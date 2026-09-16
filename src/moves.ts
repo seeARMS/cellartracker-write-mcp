@@ -1,3 +1,4 @@
+import {selectBottles,type BottleSelection} from './selection.js';
 import { randomUUID } from 'node:crypto';
 import { MoveStore, type Move } from './store.js';
 import { SafeError, type Cellar, type Inventory } from './types.js';
@@ -21,13 +22,22 @@ export class MoveService {
     const move: Move={id:randomUUID(),createdAt:new Date(now).toISOString(),expiresAt:new Date(now+15*60_000).toISOString(),accountId:inventory.accountId,source,destination,bottles:candidates,status:'planned'};
     await this.store.save(move); return move;
   }
+  async planBottles(selection: BottleSelection, destinationBin: string, destinationLocation?: string): Promise<Move> {
+    validateLabel(destinationBin);if(destinationLocation!==undefined)validateLabel(destinationLocation);
+    const inventory=await this.cellar.inventory();const bottles=selectBottles(inventory,selection);
+    if(bottles.some(b=>!(destinationLocation??b.location)))throw new SafeError('Specify a destination location for bottles with no current location.');
+    if(bottles.some(b=>b.bin===destinationBin && b.location===(destinationLocation??b.location)))throw new SafeError('A selected bottle is already at its destination; select only bottles to move.');
+    const now=Date.now();
+    const move:Move={id:randomUUID(),scope:'bottles',createdAt:new Date(now).toISOString(),expiresAt:new Date(now+15*60_000).toISOString(),accountId:inventory.accountId,destination:{location:destinationLocation,bin:destinationBin},bottles,status:'planned'};
+    await this.store.save(move);return move;
+  }
   private classify(move: Move, inventory: Inventory) {
     if (inventory.accountId!==move.accountId) throw new SafeError('Signed-in account changed. Refusing to continue this operation.');
     const byId=new Map(inventory.bottles.map(b=>[b.id,b]));
     const movedIds: string[]=[],remainingIds: string[]=[],conflictIds: string[]=[];
     for (const original of move.bottles) {
       const b=byId.get(original.id);
-      if (b?.location===move.destination.location && b.bin===move.destination.bin) movedIds.push(original.id);
+      if (b?.location===(move.destination.location??original.location) && b.bin===move.destination.bin) movedIds.push(original.id);
       else if (b?.location===original.location && b.bin===original.bin) remainingIds.push(original.id);
       else conflictIds.push(original.id);
     }
@@ -44,22 +54,25 @@ export class MoveService {
     if (Date.parse(move.expiresAt)<Date.now()) throw new SafeError('Plan expired. Create a fresh plan.');
     let inventory=await this.cellar.inventory();
     const state=this.classify(move,inventory);
-    const currentSource=inventory.bottles.filter(b=>b.location===move.source.location&&b.bin===move.source.bin).map(b=>b.id).sort();
+    const currentSource=inventory.bottles.filter(b=>b.location===move.source?.location&&b.bin===move.source?.bin).map(b=>b.id).sort();
     const planned=move.bottles.map(b=>b.id).sort();
-    if (state.remainingIds.length!==planned.length || JSON.stringify(currentSource)!==JSON.stringify(planned)) {
+    if (state.remainingIds.length!==planned.length || (move.scope!=='bottles' && JSON.stringify(currentSource)!==JSON.stringify(planned))) {
       move.status='conflict'; move.message='Source inventory changed since planning. Create a new plan.';
       Object.assign(move,state); await this.store.save(move); return move;
     }
     move.status='running'; await this.store.save(move);
     let failure=false;
-    for (let index=0; index<planned.length; index+=50) {
-      const ids=planned.slice(index,index+50);
+    const groups=new Map<string,string[]>();
+    for(const b of move.bottles){const location=move.destination.location??b.location;groups.set(location,[...(groups.get(location)??[]),b.id]);}
+    const batches=[...groups].flatMap(([location,ids])=>Array.from({length:Math.ceil(ids.length/50)},(_,i)=>({location,ids:ids.slice(i*50,i*50+50)})));
+    for (let index=0; index<batches.length; index++) {
+      const {ids,location}=batches[index];
       try {
         // Recheck account and exact remaining bottle positions before each batch.
         if (index>0) inventory=await this.cellar.inventory();
         const current=this.classify(move,inventory);
         if (current.conflictIds.length || ids.some(id=>!current.remainingIds.includes(id))) throw new SafeError('Bottle positions changed during execution.');
-        await this.cellar.relocate(ids,move.destination.location,move.destination.bin);
+        await this.cellar.relocate(ids,location,move.destination.bin);
       } catch { failure=true; }
       try {
         inventory=await this.cellar.inventory();

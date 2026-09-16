@@ -3,21 +3,33 @@ import {dirname} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {CookieJar} from 'tough-cookie';
 import {SafeError,type Transport,type BrowserRequest} from './types.js';
+import {validateConsumption} from './consumption.js';
 import {validateLabel} from './moves.js';
 const origin='https://www.cellartracker.com';
 export function buildRequest(request:BrowserRequest){
-  if(request.kind==='inventory'){
+  if(request.kind==='inventory'||request.kind==='consumed'){
     if(!Number.isInteger(request.page)||request.page<1||request.page>500)throw new SafeError('Invalid inventory page.');
-    return {path:`/list.asp?table=Inventory&Page=${request.page}`,method:'GET'};
+    return {path:`/list.asp?table=${request.kind==='inventory'?'Inventory':'Consumed'}&Page=${request.page}`,method:'GET'};
   }
   if(request.kind==='relocationForm')return {path:'/popup/relocate_form.asp',method:'GET'};
-  const {ids,location,bin}=request;
+  if(request.kind==='consumptionForm')return {path:'/popup/consume_form.asp',method:'GET'};
+  if(request.kind==='consumptionDetails'){
+    if(!/^\d+$/.test(request.wineId)||!/^\d+$/.test(request.consumedId))throw new SafeError('Invalid consumption identifiers.');
+    return {path:`/editconsumed.asp?iWine=${request.wineId}&iConsumed=${request.consumedId}`,method:'GET'};
+  }
+  if(request.kind!=='relocate'&&request.kind!=='consume')throw new SafeError('Unsupported request.');
+  const {ids}=request;
   if(!ids.length||ids.length>50||new Set(ids).size!==ids.length||ids.some(id=>!/^\d+$/.test(id)))throw new SafeError('Invalid bottle IDs.');
-  validateLabel(location);validateLabel(bin);if(!location)throw new SafeError('Location is required.');
   const latin=(value:string)=>{
     let out='';for(let i=0;i<value.length;i++){const code=value.charCodeAt(i);out+=code>255&&code!==381?'&#'+code+';':value[i];}
     return escape(out).replace(/\+/g,'%2B').replace(/%20/g,'+');
   };
+  if(request.kind==='consume'){
+    validateConsumption(request.details);if(!/^[A-Z]{3}$/.test(request.currency))throw new SafeError('Invalid currency.');
+    const d=request.details;const [year,month,day]=d.date.split('-');
+    return {path:`/bulkconsume.asp?Consumed=${Number(month)}%2F${Number(day)}%2F${year}&iConsumptionType=${d.type}&ConsumptionNote=${latin(d.note)}&Revenue=&RevenueCurrency=${request.currency}`,method:'POST',body:'BulkAction=&'+ids.map(id=>'iInventory='+id).join('&')};
+  }
+  const {location,bin}=request;validateLabel(location);validateLabel(bin);if(!location)throw new SafeError('Location is required.');
   return {path:'/relocate.asp?searchId=&UISource=&SetLocation='+latin(location)+'&SetBin='+latin(bin)+(bin===''?'&Bin_delete=on':''),method:'POST',body:'BulkAction=&'+ids.map(id=>'iInventory='+id).join('&')};
 }
 export interface Session { cookie?:string; jar?:object; userAgent:string }

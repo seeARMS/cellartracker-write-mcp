@@ -15,12 +15,23 @@
   }
   function build(request) {
     if (!request || typeof request !== 'object') throw new Error('Invalid request');
-    if (request.kind==='inventory') {
+    if (request.kind==='inventory'||request.kind==='consumed') {
       if (!Number.isInteger(request.page) || request.page<1 || request.page>500) throw new Error('Invalid page');
-      return {path:'/list.asp?table=Inventory&Page='+request.page,method:'GET'};
+      return {path:'/list.asp?table='+(request.kind==='inventory'?'Inventory':'Consumed')+'&Page='+request.page,method:'GET'};
     }
     if (request.kind==='relocationForm') return {path:'/popup/relocate_form.asp',method:'GET'};
-    if (request.kind!=='relocate' || !Array.isArray(request.ids) || request.ids.length<1 || request.ids.length>50 || request.ids.some(id=>typeof id!=='string'||!/^\d+$/.test(id)) || new Set(request.ids).size!==request.ids.length) throw new Error('Invalid relocation');
+    if(request.kind==='consumptionForm')return {path:'/popup/consume_form.asp',method:'GET'};
+    if(request.kind==='consumptionDetails'){
+      if(typeof request.wineId!=='string'||typeof request.consumedId!=='string'||!/^\d+$/.test(request.wineId)||!/^\d+$/.test(request.consumedId))throw new Error('Invalid consumption identifiers');
+      return {path:'/editconsumed.asp?iWine='+request.wineId+'&iConsumed='+request.consumedId,method:'GET'};
+    }
+    if ((request.kind!=='relocate' && request.kind!=='consume') || !Array.isArray(request.ids) || request.ids.length<1 || request.ids.length>50 || request.ids.some(id=>typeof id!=='string'||!/^\d+$/.test(id)) || new Set(request.ids).size!==request.ids.length) throw new Error('Invalid relocation');
+    if(request.kind==='consume'){
+      const d=request.details;
+      if(!d||typeof d.date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(d.date)||Number.isNaN(Date.parse(d.date))||new Date(d.date).toISOString().slice(0,10)!==d.date||!Number.isInteger(d.type)||d.type<1||d.type>14||typeof d.note!=='string'||d.note.length>512||/[\x00-\x1f\x7f]/.test(d.note)||typeof request.currency!=='string'||!/^[A-Z]{3}$/.test(request.currency))throw new Error('Invalid consumption');
+      const [year,month,day]=d.date.split('-');
+      return {path:'/bulkconsume.asp?Consumed='+Number(month)+'%2F'+Number(day)+'%2F'+year+'&iConsumptionType='+d.type+'&ConsumptionNote='+latin(d.note)+'&Revenue=&RevenueCurrency='+request.currency,method:'POST',body:'BulkAction=&'+request.ids.map(id=>'iInventory='+id).join('&')};
+    }
     const location=label(request.location), bin=label(request.bin);
     if(!location)throw new Error('Location is required');
     const query='searchId=&UISource=&SetLocation='+latin(location)+'&SetBin='+latin(bin)+(bin===''?'&Bin_delete=on':'');
