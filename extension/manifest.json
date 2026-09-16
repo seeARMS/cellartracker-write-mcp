@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "CellarTracker Write MCP Companion",
+  "version": "0.1.0",
+  "description": "Connect a local MCP server to your signed-in CellarTracker tab. Unofficial; no cookies or passwords are exported.",
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:17843/*",
+    "https://www.cellartracker.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.cellartracker.com/*"
+      ],
+      "js": [
+        "protocol.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "CellarTracker MCP"
+  }
+}

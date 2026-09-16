@@ -1,0 +1,15 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {CellarTracker,parseInventory} from '../src/cellar.js';
+import {bottle,html} from './helpers.js';
+import type {BrowserRequest} from '../src/types.js';
+const response=(text:string)=>({status:200,url:'https://www.cellartracker.com/list.asp',text});
+test('reads exact bottle fields, including empty bin and unicode',()=>{const b=bottle('1','Cave à vin','');assert.deepEqual(parseInventory(html([b])).bottles,[b]);});
+test('login page is not an empty inventory',()=>assert.throws(()=>parseInventory('<html>Sign in</html>'),/Not signed in/));
+test('site omits bin span for an empty bin',()=>assert.equal(parseInventory(html([bottle('1')]).replace('<span class="bin">23</span>','')).bottles[0].bin,''));
+test('hidden bin column fails closed',()=>assert.throws(()=>parseInventory(html([bottle('1')]).replace('O=BinSort','O=Other')),/Bin column/));
+test('reads every page and validates total',async()=>{const c=new CellarTracker({request:async r=>{assert.equal(r.kind,'inventory');const page=(r as {page:number}).page;return response(html([bottle(String(page))],page,2,2));}});assert.equal((await c.inventory()).bottles.length,2);});
+test('duplicate bottle IDs across pages rejected',async()=>{const c=new CellarTracker({request:async r=>response(html([bottle('1')],(r as {page:number}).page,2,2))});await assert.rejects(()=>c.inventory(),/duplicate/);});
+test('account drift across pages rejected',async()=>{const c=new CellarTracker({request:async r=>{const page=(r as {page:number}).page;return response(html([bottle(String(page))],page,2,2,String(page)));}});await assert.rejects(()=>c.inventory(),/changed while paging/);});
+test('changed relocation form prevents POST',async()=>{const calls:BrowserRequest[]=[];const c=new CellarTracker({request:async r=>{calls.push(r);return response('<form id="bulk_popup_form" action="new.asp"></form>');}});await assert.rejects(()=>c.relocate(['1'],'A','24'),/contract changed/);assert.equal(calls.length,1);});
+test('site XML error is not success',async()=>{const c=new CellarTracker({request:async r=>response(r.kind==='relocationForm'?'<form id="bulk_popup_form" method="post" action="relocate.asp"><input name="SetLocation"><input name="SetBin"></form>':'<response><error>Denied</error></response>')});await assert.rejects(()=>c.relocate(['1'],'A','24'),/reported a relocation error/);});

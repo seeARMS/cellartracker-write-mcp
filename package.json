@@ -1,0 +1,43 @@
+{
+  "name": "cellartracker-write-mcp",
+  "version": "0.1.0",
+  "description": "Unofficial local MCP server for verified CellarTracker bottle relocations",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "cellartracker-write-mcp": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "extension",
+    "README.md",
+    "LICENSE",
+    "docs",
+    "SECURITY.md",
+    "CONTRIBUTING.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsx --test test/*.test.ts",
+    "check": "npm run build && npm test",
+    "start": "node dist/cli.js serve",
+    "setup": "node dist/cli.js setup",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "cheerio": "^1.2.0",
+    "proper-lockfile": "^4.1.2",
+    "tough-cookie": "^6.0.2",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "@types/proper-lockfile": "^4.1.4",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  }
+}

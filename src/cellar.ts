@@ -1,0 +1,70 @@
+import { load } from 'cheerio';
+import { SafeError, type Bottle, type Cellar, type Inventory, type Transport } from './types.js';
+
+export function parseInventory(html: string) {
+  const $ = load(html);
+  const accountHref = $('#header a[href*="user.asp?iUserOverride="]').attr('href');
+  const accountId = accountHref && new URL(accountHref, 'https://www.cellartracker.com/').searchParams.get('iUserOverride');
+  if (!accountId || !/^\d+$/.test(accountId)) throw new SafeError('Not signed in, account identity unavailable, or the site layout changed. Open CellarTracker in Chrome and sign in.');
+  const paging = $('#top_gotolink').text().match(/page\s+([\d,]+)\s+of\s+([\d,]+)/i);
+  const number = (s: string) => Number(s.replaceAll(',', ''));
+  const countText = $('a').toArray().map(e => $(e).text()).find(t => /In My Cellar\s*\([\d,]+ bottles?\)/i.test(t));
+  const count = countText?.match(/\(([\d,]+) bottles?\)/i);
+  if (!count) throw new SafeError('Cannot verify inventory total; refusing an incomplete inventory.');
+  const total = number(count[1]);
+  if (total > 0 && !paging) throw new SafeError('Inventory pagination is missing.');
+  if (total > 0 && !$('#main_table a[href*="O=BinSort"]').length) throw new SafeError('Bin column is not enabled; restore the standard Individual Bottles view.');
+  const bottles: Bottle[] = [];
+  $('#main_table tr').each((_, row) => {
+    const r = $(row);
+    const checkbox = r.find('input[name="iInventory"]');
+    if (!checkbox.length) return;
+    const id = checkbox.attr('value');
+    const cell = r.find('span.bar').closest('td');
+    const loc = cell.find('span.loc');
+    const bin = cell.find('span.bin');
+    const wine = r.find('td.name h3').text().trim();
+    if (!id || !/^\d+$/.test(id) || !wine || loc.length !== 1 || bin.length > 1) throw new SafeError('Bottle markup changed; refusing to infer missing fields.');
+    bottles.push({ id: BigInt(id).toString(), wine, location: loc.text().trim(), bin: bin.text().trim() });
+  });
+  return { accountId, bottles, total, page: paging ? number(paging[1]) : 1, pages: paging ? number(paging[2]) : 1 };
+}
+
+export class CellarTracker implements Cellar {
+  constructor(private transport: Transport) {}
+  async inventory(): Promise<Inventory> {
+    const bottles: Bottle[] = [];
+    let expected: ReturnType<typeof parseInventory> | undefined;
+    for (let page = 1; ; page++) {
+      const response = await this.transport.request({kind:'inventory', page});
+      this.checkResponse(response.status, response.url);
+      const data = parseInventory(response.text);
+      expected ??= data;
+      if (data.page !== page || data.pages !== expected.pages || data.total !== expected.total || data.accountId !== expected.accountId || data.pages > 500) throw new SafeError('Inventory changed while paging or pagination is inconsistent. Read again before moving.');
+      bottles.push(...data.bottles);
+      if (page === data.pages) break;
+    }
+    if (bottles.length !== expected!.total || new Set(bottles.map(b=>b.id)).size !== bottles.length) throw new SafeError('Inventory is incomplete or contains duplicate bottle IDs. No move performed.');
+    return {accountId: expected!.accountId, bottles};
+  }
+  private checkResponse(status: number, url: string) {
+    const parsed = new URL(url);
+    if (status !== 200 || parsed.origin !== 'https://www.cellartracker.com' || /login/i.test(parsed.pathname)) throw new SafeError('CellarTracker rejected the request or requires sign-in. Open the site in Chrome.');
+  }
+  async relocate(ids: string[], location: string, bin: string) {
+    const form = await this.transport.request({kind:'relocationForm'});
+    this.checkResponse(form.status, form.url);
+    const $ = load(form.text);
+    const f = $('#bulk_popup_form');
+    if (f.attr('action') !== 'relocate.asp' || f.attr('method')?.toLowerCase() !== 'post' || !f.find('[name="SetLocation"]').length || !f.find('[name="SetBin"]').length) throw new SafeError('Relocation form contract changed. No write submitted.');
+    const allowed = new Set(['searchId','UISource','SetLocation','SetBin','Bin_delete']);
+    if (f.find('[name]').toArray().some(e=>!allowed.has($(e).attr('name')!))) throw new SafeError('Relocation form has new fields; adapter must be reviewed before writing.');
+    const response = await this.transport.request({kind:'relocate',ids,location,bin});
+    this.checkResponse(response.status, response.url);
+    // The website checks <error> nodes. Inventory read-back, not HTTP 200,
+    // is the authoritative success check in MoveService.
+    const xml = load(response.text, {xml:true});
+    if (xml('error').length && xml('error').text().trim()) throw new SafeError('CellarTracker reported a relocation error. Check the operation status for verified bottle outcomes.');
+    if (/<!doctype html|<html[\s>]/i.test(response.text)) throw new SafeError('Unexpected HTML response to relocation; outcome must be reconciled.');
+  }
+}

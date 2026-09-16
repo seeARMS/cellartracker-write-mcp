@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.local/
+# Private authentication files and atomic-write leftovers, at any depth.
+session.json
+session.json.*.tmp
+pairing.json
+pairing.json.*.tmp
+# Persisted move plans and outcomes contain personal inventory data.
+operations/
+.env*
+*.log
+*.har
+coverage/
+.DS_Store
