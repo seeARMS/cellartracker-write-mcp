@@ -15,6 +15,21 @@
   }
   function build(request) {
     if (!request || typeof request !== 'object') throw new Error('Invalid request');
+    if(request.kind==='searchWines'){
+      if(typeof request.query!=='string'||!request.query.trim()||request.query.length>200||!Number.isInteger(request.page)||request.page<1||request.page>500)throw new Error('Invalid search');
+      return {path:'/list.asp?Table=List&iUserOverride=0&fInStock=0&szSearch='+encodeURIComponent(request.query)+'&Page='+request.page,method:'GET'};
+    }
+    if(request.kind==='creationForm'){
+      if(typeof request.wineId!=='string'||!/^\d+$/.test(request.wineId))throw new Error('Invalid wine ID');
+      return {path:'/purchase.asp?iWine='+request.wineId,method:'GET'};
+    }
+    if(request.kind==='createBottles'){
+      const d=request.details;
+      if(!d||typeof d.wineId!=='string'||!/^\d+$/.test(d.wineId)||BigInt(d.wineId)<1n||!Number.isInteger(d.quantity)||d.quantity<1||d.quantity>240||typeof d.size!=='string'||!/^\d+(?:\.\d+)?(?:ml|L|oz)$/.test(d.size)||typeof request.currency!=='string'||!/^[A-Z]{3}$/.test(request.currency))throw new Error('Invalid creation');
+      label(d.location);label(d.bin);if(!d.location)throw new Error('Location is required');
+      const fields={iWine:d.wineId,Action:'Add',BinUI:'Bulk',Quantity:String(d.quantity),Size:d.size,DeliveryState:'delivered',Location:d.location,Bin:d.bin,BottleNote:'',StoreName:'',PurchaseDate:'',DeliveryDate:'',BottleCostCurrency:request.currency,BottleCost:'',PurchaseNote:''};
+      return {path:'/purchase.asp',method:'POST',body:Object.entries(fields).map(([key,value])=>key+'='+latin(value)).join('&')};
+    }
     if (request.kind==='inventory'||request.kind==='consumed') {
       if (!Number.isInteger(request.page) || request.page<1 || request.page>500) throw new Error('Invalid page');
       return {path:'/list.asp?table='+(request.kind==='inventory'?'Inventory':'Consumed')+'&Page='+request.page,method:'GET'};

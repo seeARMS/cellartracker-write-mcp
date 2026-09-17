@@ -4,7 +4,7 @@ This server is intended for one local user and one Chrome profile. It is not a m
 
 Direct cookie authentication stores a private session jar outside the repository and sends cookies only to the fixed CellarTracker HTTPS origin. No redirects are followed. A session file is equivalent to a login credential; refresh it after expiry or revoke it by signing out through the site. A source HAR may also contain credentials and should be removed after import.
 
-The optional companion grants the paired server read access to inventory and consumption history, and write access to bottle locations/bins and consumption records. Cookies and passwords stay in Chrome; pairing tokens and operation snapshots are sensitive local files. Never share or commit them. Do not expose port 17843 on a network, proxy it, or bind it to another address.
+The optional companion grants the paired server read access to inventory and consumption history, and write access to creating bottles, bottle locations/bins, and consumption records. Cookies and passwords stay in Chrome; pairing tokens and operation snapshots are sensitive local files. Never share or commit them. Do not expose port 17843 on a network, proxy it, or bind it to another address.
 
 The bridge requires a 256-bit pairing token, validates Host/Origin, and accepts only fixed typed operations. Extension host access is restricted to CellarTracker and the loopback bridge. The content script has no page-message listener and does not expose the bridge to the website. The pairing token is stored only in local extension storage, not Chrome Sync. A malicious local process with access to your account can still read local secrets; this does not defend against a compromised machine.
 

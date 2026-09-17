@@ -1,3 +1,4 @@
+import {validateCreation} from './creation.js';
 import {readFile,writeFile,rename,stat,chmod,mkdir} from 'node:fs/promises';
 import {dirname} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -7,6 +8,20 @@ import {validateConsumption} from './consumption.js';
 import {validateLabel} from './moves.js';
 const origin='https://www.cellartracker.com';
 export function buildRequest(request:BrowserRequest){
+  if(request.kind==='searchWines'){
+    if(typeof request.query!=='string'||!request.query.trim()||request.query.length>200||!Number.isInteger(request.page)||request.page<1||request.page>500)throw new SafeError('Invalid search.');
+    return {path:'/list.asp?Table=List&iUserOverride=0&fInStock=0&szSearch='+encodeURIComponent(request.query)+'&Page='+request.page,method:'GET'};
+  }
+  if(request.kind==='creationForm'){
+    if(!/^\d+$/.test(request.wineId))throw new SafeError('Invalid wine ID.');
+    return {path:'/purchase.asp?iWine='+request.wineId,method:'GET'};
+  }
+  if(request.kind==='createBottles'){
+    const d=request.details;validateCreation(d);if(!/^[A-Z]{3}$/.test(request.currency))throw new SafeError('Invalid currency.');
+    const fields={iWine:d.wineId,Action:'Add',BinUI:'Bulk',Quantity:String(d.quantity),Size:d.size,DeliveryState:'delivered',Location:d.location,Bin:d.bin,BottleNote:'',StoreName:'',PurchaseDate:'',DeliveryDate:'',BottleCostCurrency:request.currency,BottleCost:'',PurchaseNote:''};
+    return {path:'/purchase.asp',method:'POST',body:Object.entries(fields).map(([key,value])=>key+'='+latin(value)).join('&')};
+  }
+
   if(request.kind==='inventory'||request.kind==='consumed'){
     if(!Number.isInteger(request.page)||request.page<1||request.page>500)throw new SafeError('Invalid inventory page.');
     return {path:`/list.asp?table=${request.kind==='inventory'?'Inventory':'Consumed'}&Page=${request.page}`,method:'GET'};
@@ -20,10 +35,6 @@ export function buildRequest(request:BrowserRequest){
   if(request.kind!=='relocate'&&request.kind!=='consume')throw new SafeError('Unsupported request.');
   const {ids}=request;
   if(!ids.length||ids.length>50||new Set(ids).size!==ids.length||ids.some(id=>!/^\d+$/.test(id)))throw new SafeError('Invalid bottle IDs.');
-  const latin=(value:string)=>{
-    let out='';for(let i=0;i<value.length;i++){const code=value.charCodeAt(i);out+=code>255&&code!==381?'&#'+code+';':value[i];}
-    return escape(out).replace(/\+/g,'%2B').replace(/%20/g,'+');
-  };
   if(request.kind==='consume'){
     validateConsumption(request.details);if(!/^[A-Z]{3}$/.test(request.currency))throw new SafeError('Invalid currency.');
     const d=request.details;const [year,month,day]=d.date.split('-');
@@ -32,6 +43,11 @@ export function buildRequest(request:BrowserRequest){
   const {location,bin}=request;validateLabel(location);validateLabel(bin);if(!location)throw new SafeError('Location is required.');
   return {path:'/relocate.asp?searchId=&UISource=&SetLocation='+latin(location)+'&SetBin='+latin(bin)+(bin===''?'&Bin_delete=on':''),method:'POST',body:'BulkAction=&'+ids.map(id=>'iInventory='+id).join('&')};
 }
+  const latin=(value:string)=>{
+    let out='';for(let i=0;i<value.length;i++){const code=value.charCodeAt(i);out+=code>255&&code!==381?'&#'+code+';':value[i];}
+    return escape(out).replace(/\+/g,'%2B').replace(/%20/g,'+');
+  };
+
 export interface Session { cookie?:string; jar?:object; userAgent:string }
 export async function saveSession(path:string,session:Session){
   await mkdir(dirname(path),{recursive:true,mode:0o700});

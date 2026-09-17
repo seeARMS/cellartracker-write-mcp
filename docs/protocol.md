@@ -33,6 +33,18 @@ These IDs are synthetic. The website uses `serializeLatin`, based on JavaScript 
 
 The site considers `<error>` elements in its XML response failures. The wrapper additionally requires inventory read-back to establish success; a successful HTTP response is not enough.
 
+## Catalog search and bottle creation
+
+`GET /list.asp?Table=List&iUserOverride=0&fInStock=0&szSearch=QUERY&Page=N` searches the global catalog. Rows expose `input[name=iWine]`, the vintage/name in `td.name h3`, type in `td.type`, and region in `td.name .loc`. Single-page searches omit the pagination widget; the reader verifies the displayed wine total against the parsed rows instead.
+
+`GET /purchase.asp?iWine=ID` exposes `form#wine_form`, method POST and action `purchase.asp`. The reader validates its exact field set, hidden wine ID, `Action=Add`, `BinUI=Bulk`, available sizes, currency, and account identity. It submits these fixed fields to `/purchase.asp`:
+
+```text
+iWine=100&Action=Add&BinUI=Bulk&Quantity=1&Size=750ml&DeliveryState=delivered&Location=Example+cellar&Bin=&BottleNote=&StoreName=&PurchaseDate=&DeliveryDate=&BottleCostCurrency=USD&BottleCost=&PurchaseNote=
+```
+
+All identifiers and labels in this example are synthetic. Optional purchase metadata is blank. A successful native form submission can redirect; the cookie transport never follows redirects. Regardless of the POST response, the service reads complete inventory and verifies previously unseen IDs against the planned quantity, wine, size, location, and bin. It never resubmits the POST for that operation ID. The baseline is persisted before writing, so interrupted operations can be inspected after restart. This is observation-based verification, not a server-side idempotency guarantee; concurrent additions of the same wine can make attribution ambiguous.
+
 ## Consumption
 
 `GET /popup/consume_form.asp` exposes `form#bulk_popup_form`, with `method=post`, `action=bulkconsume.asp`, and fields `Consumed`, `iConsumptionType`, `ConsumptionNote`, `Revenue`, `RevenueCurrency`, and `WriteTN`. The wrapper validates this contract before submitting. It reads the form's currency, leaves revenue empty, and omits `WriteTN`.
@@ -57,4 +69,4 @@ A plain unauthenticated HTTP fetch was rejected with HTTP 405 during development
 
 The extension polls an authenticated loopback HTTP server. Jobs have unique IDs and deadlines, and are delivered at most once. The server rejects non-loopback Host headers and web-page Origins. The extension validates operation shape independently and constructs paths itself. Neither side accepts a general URL or arbitrary script from an MCP tool argument.
 
-No live relocation or consumption was performed merely to inspect the forms. End-to-end live write validation remains a release gate.
+Bottle creation was validated end to end through the MCP client against live inventory, including newly assigned bottle IDs and their wine, size, location, and bin. No live relocation or consumption was performed merely to inspect the forms; those write paths still need live validation.

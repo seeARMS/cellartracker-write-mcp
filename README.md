@@ -1,26 +1,27 @@
 # CellarTracker Write MCP
 
-An **unofficial, local-only** MCP server that moves bottles and logs consumption in CellarTracker, with fresh inventory checks and verified outcomes.
+An **unofficial, local-only** MCP server that adds bottles, moves bottles, and logs consumption in CellarTracker, with fresh inventory checks and verified outcomes.
 
 Say “move all bottles from bin 23 to bin 24.” The assistant plans against exact bottle IDs, submits the relocation using your authenticated CellarTracker session, and checks that those bottles reached their destination.
 
-**Status:** early prototype. The request contract was inspected against the live website on September 16, 2026. Direct cookie authentication and complete inventory pagination have been verified live. Automated tests use synthetic data. A live write must be validated before treating this as production-ready. CellarTracker does not provide a documented compatibility guarantee for the website endpoints used here.
+**Status:** early prototype. The request contract was inspected against the live website on September 16, 2026. Direct cookie authentication and complete inventory pagination have been verified live. Automated tests use synthetic data. Bottle creation has been verified live; relocation and consumption writes still require live validation before production use. CellarTracker does not provide a documented compatibility guarantee for the website endpoints used here.
 
 ## How this differs from read-only CellarTracker MCP servers
 
 Export-based CellarTracker MCP servers make your cellar available to an assistant for searches, summaries, and recommendations. Their read-only tools can help you decide what to move, but cannot save that move in CellarTracker.
 
-**This server adds writes to CellarTracker itself.** It uses the website's authenticated workflows to update bottle locations/bins or record consumption, then verifies the result against current inventory and, for consumption, the recorded history.
+**This server adds writes to CellarTracker itself.** It uses the website's authenticated workflows to add bottles, update their locations/bins, or record consumption, then verifies the result against current inventory and, for consumption, the recorded history.
 
 | Capability | Export-based, read-only MCP servers | This server |
 | --- | --- | --- |
 | Read cellar data | Read exported inventory | Read current individual-bottle inventory from the website |
+| Add bottles to your cellar | Cannot save changes | Add quantities of an existing catalog wine and verify new bottle IDs |
 | Move bottles between bins or locations | Cannot save changes | Submit relocations for exact bottle IDs |
 | Log consumption | Cannot save changes | Record the date, reason, and consumption note for exact bottles |
 | Verify a move | No write operation to verify | Check each selected bottle's destination after writing |
 | Recover from an interrupted move | Not applicable to writes | Record outcomes and inspect current positions without automatically replaying writes |
 
-The current write scope is **bottle relocation and consumption logging**. Adding wine, editing tasting notes, recording sale revenue, and permanently deleting bottles are not implemented. This can complement an existing MCP used for wine discovery or analysis. It relies on undocumented website endpoints, so compatibility may change when CellarTracker updates its site.
+The current write scope is **bottle creation for existing catalog wines, relocation, and consumption logging**. Creating new catalog wines, editing tasting notes, recording purchase costs/dates or sale revenue, and permanently deleting bottles are not implemented. This can complement an existing MCP used for wine discovery or analysis. It relies on undocumented website endpoints, so compatibility may change when CellarTracker updates its site.
 
 ## Architecture
 
@@ -31,7 +32,7 @@ MCP client → local Node.js stdio server → direct HTTPS requests using a priv
 
 Direct cookie authentication is the default when a session file is present. It works without the companion or an open Chrome window. Cookies stay in a private file on your machine and are sent only to `https://www.cellartracker.com`. Redirects are not followed. Server-issued refresh cookies are retained; when the session expires, import a fresh session.
 
-The optional Chrome companion uses an existing signed-in tab instead. It is useful if direct requests stop working due to browser challenges. It supports only the fixed inventory, relocation, and consumption operations, never arbitrary URLs or scripts.
+The optional Chrome companion uses an existing signed-in tab instead. It is useful if direct requests stop working due to browser challenges. It supports only the fixed catalog search, inventory, creation, relocation, and consumption operations, never arbitrary URLs or scripts.
 
 ## Local setup (cookie authentication)
 
@@ -94,6 +95,10 @@ Run only **one** instance per state directory at a time; a process lock prevents
 
 | Tool | Effect |
 | --- | --- |
+| `search_wines` | Search the global catalog by name/vintage, returning wine IDs and pagination |
+| `plan_bottle_creation` | Snapshot inventory and validate an addition to an existing wine |
+| `execute_bottle_creation` | Create in-stock bottles and verify new IDs, wine, size, location, and bin |
+| `get_creation_status` | Compare current inventory with the saved pre-creation baseline |
 | `connection_status` | Checks transport availability, not login |
 | `list_bins` | Fresh complete inventory summarized by exact location/bin |
 | `list_bottles` | Fresh inventory including bottle ID, wine ID and size; exact location/bin/wine ID/size or wine substring filters; paginated results |
@@ -115,6 +120,18 @@ Example tool sequence (the assistant can perform both calls from one clear user 
 Pass the returned `id` to `execute_bin_move` as `operation_id`. A plan is a technical precondition, not a requirement to ask the user for a second confirmation. Authorization remains the MCP client's responsibility.
 
 Labels are exact strings: `23` and `023` are different. Omitting `location` works only when the source bin occurs in one location. The original location is preserved unless `destination_location` is explicitly supplied. An empty destination bin deliberately clears the bin field.
+
+### Adding bottles
+
+Use `search_wines` to match the producer, vintage, designation, and type, then pass its exact wine ID to `plan_bottle_creation`:
+
+```json
+{"wine_id":"100","quantity":2,"location":"Example cellar","size":"750ml","bin":"24"}
+```
+
+Pass the returned `id` to `execute_bottle_creation`. Quantity is 1–240; size defaults to `750ml` and bin to empty. The tool adds in-stock bottles to an existing catalog wine. It leaves optional purchase dates, prices, store, and notes blank rather than inventing them. It does not create a shared catalog entry or pending delivery.
+
+Every creation is persisted before the POST. Reusing the operation ID never submits again, including after a timeout or restart. `get_creation_status` exposes newly observed bottle IDs relative to the saved baseline. A partial or uncertain result needs reconciliation, not an automatic replacement plan. The website provides no idempotency key or atomic compare-and-swap; avoid concurrent manual additions of the same wine because attribution by inventory difference cannot distinguish them.
 
 ### Selected bottles and quantities
 

@@ -22,7 +22,7 @@ test('MCP client can discover, plan, execute, and verify through transport',asyn
  }},new MoveStore(dir),()=>true);
  const [a,b]=InMemoryTransport.createLinkedPair();await server.connect(a);
  const client=new Client({name:'test',version:'1'});await client.connect(b);t.after(async()=>{await client.close();await server.close();});
- assert.equal((await client.listTools()).tools.length,11);
+ assert.equal((await client.listTools()).tools.length,15);
  assert.equal(decode(await client.callTool({name:'list_bins',arguments:{}})).total,2);
  const plan=decode(await client.callTool({name:'plan_bin_move',arguments:{source_bin:'23',destination_bin:'24'}}));
  assert.equal(writes,0);
@@ -36,7 +36,7 @@ test('compiled stdio entrypoint initializes without stdout noise',async t=>{
  const client=new Client({name:'stdio-test',version:'1'});
  const transport=new StdioClientTransport({command:process.execPath,args:['dist/cli.js','serve'],env:{CELLARTRACKER_STATE_DIR:dir},stderr:'pipe'});
  await client.connect(transport);t.after(()=>client.close());
- assert.equal((await client.listTools()).tools.length,11);
+ assert.equal((await client.listTools()).tools.length,15);
  assert.equal(decode(await client.callTool({name:'connection_status',arguments:{}})).connected,false);
 });
 test('MCP quantity move and consumption primitives preserve exact selected IDs',async t=>{
