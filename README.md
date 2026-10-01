@@ -2,6 +2,8 @@
 
 An **unofficial, local-only** MCP server that adds bottles, moves bottles, and logs consumption in CellarTracker, with fresh inventory checks and verified outcomes.
 
+A separate [owner-private cloud adapter](cloud/README.md) provides inventory and consumption tools without an online Mac. It uses a Worker and D1, with bounded read backoff and durable duplicate protection. The local server and Chrome companion remain separate.
+
 Say “move all bottles from bin 23 to bin 24.” The assistant plans against exact bottle IDs, submits the relocation using your authenticated CellarTracker session, and checks that those bottles reached their destination.
 
 **Status:** early prototype. The request contract was inspected against the live website on September 16, 2026. Direct cookie authentication and complete inventory pagination have been verified live. Automated tests use synthetic data. Bottle creation has been verified live; relocation and consumption writes still require live validation before production use. CellarTracker does not provide a documented compatibility guarantee for the website endpoints used here.

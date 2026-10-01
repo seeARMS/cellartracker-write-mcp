@@ -1,0 +1,25 @@
+{
+  "name": "cellartracker-cloud",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "validate": "node scripts/validate-artifact.mjs",
+    "test": "node --import tsx --test test/*.test.ts",
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "cheerio": "1.2.0",
+    "tough-cookie": "6.0.2"
+  },
+  "devDependencies": {
+    "drizzle-orm": "0.45.2",
+    "drizzle-kit": "0.31.10",
+    "esbuild": "0.28.2",
+    "tsx": "4.23.13"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  }
+}
