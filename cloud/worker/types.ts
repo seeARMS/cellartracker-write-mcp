@@ -1,7 +1,8 @@
 export class SafeError extends Error {}
 export type CooldownSource='provider_retry_after'|'fallback';
-export interface ProviderGate {assertAvailable():Promise<void>;record(retryAt:number,source:CooldownSource):Promise<void>}
-export interface RetryMetadata {error_code:string;upstream_status?:number;attempts:number;retry_at:string;retry_after_seconds:number;cooldown_source:CooldownSource;automatic_retry_allowed:false;submission_retry_allowed:false}
+export interface ProviderGate {assertAvailable():Promise<void>;record(retryAt:number,source:CooldownSource):Promise<void>;pace?(deadline:number):Promise<void>}
+export interface RetryDiagnostics {error_origin:'upstream_http'|'saved_provider_cooldown'|'snapshot_state'|'request_pacing'|'read_failure';request_kind?:BrowserRequest['kind'];upstream_page?:number;total_upstream_attempts?:number;successful_upstream_reads?:number}
+export interface RetryMetadata extends RetryDiagnostics {error_code:string;upstream_status?:number;attempts:number;retry_at:string;retry_after_seconds:number;cooldown_source:CooldownSource;automatic_retry_allowed:false;submission_retry_allowed:false}
 export class RetryError extends SafeError {constructor(message:string,readonly metadata:RetryMetadata){super(message);}}
 export class AccessError extends SafeError {constructor(message:string,readonly status:number){super(message);}}
 export interface Bottle {id:string;wine:string;wineId?:string;size?:string;location:string;bin:string}

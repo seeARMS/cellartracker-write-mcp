@@ -58,3 +58,12 @@ test('cancellation during preflight blocks a late submission',async t=>{
  cellar.pauseInventory=async()=>{entered();await paused;};const executing=service.execute(p.operation_id);await started;
  assert.equal((await service.cancel(p.operation_id)).status,'canceled');resume();assert.equal((await executing).status,'canceled');assert.equal(cellar.writes,0);
 });
+test('expiry during preflight atomically blocks submission and releases the execution lock',async t=>{
+ const {service,cellar,db}=setup(t);const p=await service.plan(request());let entered!:()=>void,resume!:()=>void;const started=new Promise<void>(r=>entered=r),paused=new Promise<void>(r=>resume=r);
+ cellar.pauseInventory=async()=>{entered();await paused;};const executing=service.execute(p.operation_id);await started;
+ const saved=JSON.parse(db.sqlite.prepare('SELECT body FROM operations WHERE id=?').get(p.operation_id)!.body as string);saved.expiresAt=0;
+ db.sqlite.prepare('UPDATE operations SET expires_at=0,body=? WHERE id=?').run(JSON.stringify(saved),p.operation_id);
+ resume();const stopped=await executing;assert.equal(stopped.status,'conflict');assert.equal(stopped.dry_run,true);assert.equal(cellar.writes,0);
+ assert.equal(db.sqlite.prepare('SELECT count(*) AS n FROM account_locks').get()!.n,0);
+ assert.equal((await service.execute(p.operation_id)).status,'conflict');assert.equal(cellar.writes,0);
+});

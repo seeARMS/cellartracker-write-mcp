@@ -1,10 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import worker,{callTool} from '../worker/index.js';
+import worker from '../worker/index.js';
 import {InventorySnapshots,snapshotPolicy} from '../worker/snapshots.js';
 import {retryFailure} from '../worker/backoff.js';
 import {RetryError} from '../worker/types.js';
-import {SqliteD1,bottle,inventoryHtml,upstream} from './helpers.js';
+import {callTool,SqliteD1,bottle,inventoryHtml,upstream} from './helpers.js';
 const request=()=>new Request('https://synthetic.invalid/mcp',{method:'POST',headers:{'oai-authenticated-user-id':'owner'}});
 const configured=(db:SqliteD1)=>({DB:db,CELLARTRACKER_OWNER_USER_ID:'owner',CELLARTRACKER_EXPECTED_ACCOUNT_ID:'123',CELLARTRACKER_READS_ENABLED:'true',CELLARTRACKER_WRITES_ENABLED:'true',CELLARTRACKER_SESSION_EXPIRES_AT:new Date(Date.now()+3600000).toISOString(),CELLARTRACKER_SESSION_JSON:JSON.stringify({cookie:'fixture=synthetic-only',userAgent:'Synthetic Agent'})});
 test('all pagination calls reuse one complete inventory walk, with or without the snapshot ID',async t=>{

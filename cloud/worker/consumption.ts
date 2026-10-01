@@ -39,7 +39,12 @@ export class CloudConsumption {
   try{
    const before=await this.observe(op);
    if(before.remainingIds.length!==op.bottles.length)throw new SafeError('Bottle identity, inventory, or history changed after the dry run. No consumption submitted.');
-   submissionBoundary=true;if(!await this.store.submit(id))return summarize(await this.store.get(id));
+   if(op.expiresAt<=Date.now())throw new SafeError('Dry-run plan expired during fresh preflight. No consumption submitted.');
+   submissionBoundary=true;if(!await this.store.submit(id)){
+    const stopped=await this.store.get(id);
+    if(stopped.status==='checking'&&stopped.expiresAt<=Date.now())await this.store.failBeforeSubmission(id,{consumedIds:[],remainingIds:[],conflictIds:[],message:'Dry-run plan expired before submission. No consumption submitted.'});
+    return summarize(await this.store.get(id));
+   }
    try{await this.cellar.consume(op.bottles.map(b=>b.id),op.details);}catch{/* A lost response is not a failed write. Always read back; never replay. */}
    const after=await this.observe(op);const complete=after.consumedIds.length===op.bottles.length;
    after.message=complete?'Verified exact bottle removal and matching consumption date, reason, and note.':'Outcome is unresolved. This operation will never replay; inspect its status. Other consumption stays blocked until reconciliation.';

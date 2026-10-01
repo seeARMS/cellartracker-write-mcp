@@ -23,3 +23,6 @@ export const inventorySnapshots=sqliteTable('inventory_snapshots',{
 export const providerCooldowns=sqliteTable('provider_cooldowns',{
  owner:text('owner').notNull(),accountId:text('account_id').notNull(),retryAt:integer('retry_at').notNull(),source:text('source').notNull()
 },t=>[primaryKey({columns:[t.owner,t.accountId]})]);
+export const providerRequestSlots=sqliteTable('provider_request_slots',{
+ owner:text('owner').notNull(),accountId:text('account_id').notNull(),nextAt:integer('next_at').notNull()
+},t=>[primaryKey({columns:[t.owner,t.accountId]})]);

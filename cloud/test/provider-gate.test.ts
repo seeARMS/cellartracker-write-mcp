@@ -4,8 +4,7 @@ import {CloudCookieTransport} from '../worker/transport.js';
 import {ProviderCooldown} from '../worker/provider-gate.js';
 import {InventorySnapshots} from '../worker/snapshots.js';
 import {RetryError,type BrowserRequest} from '../worker/types.js';
-import {callTool} from '../worker/index.js';
-import {SqliteD1,upstream} from './helpers.js';
+import {callTool,SqliteD1,upstream} from './helpers.js';
 const marker='SYNTHETIC_PRIVATE_MARKER';
 const initial=Date.parse('2026-10-01T00:00:00Z');
 const request=()=>new Request('https://synthetic.invalid/mcp',{method:'POST',headers:{'oai-authenticated-user-id':'owner'}});
@@ -46,7 +45,7 @@ test('429 from every endpoint persists a gate, including a single rejected POST'
  }
 });
 test('fallback versus provider source describes the effective cooldown without storing raw headers',async t=>{
- for(const [header,source,attempts]of [[undefined,'fallback',3],['invalid '+marker,'fallback',3],['2','fallback',3],['120','provider_retry_after',1],[new Date(initial+120000).toUTCString(),'provider_retry_after',1]]as const){
+ for(const [header,source,attempts]of [[undefined,'fallback',1],['invalid '+marker,'fallback',1],['2','fallback',1],['120','provider_retry_after',1],[new Date(initial+120000).toUTCString(),'provider_retry_after',1]]as const){
   const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);let calls=0;
   const transport=await new CloudCookieTransport(f.env,(async()=>{calls++;return new Response(marker,{status:429,headers:header?{'retry-after':header}:undefined});})as typeof fetch,f.clock,f.gate()).init();
   await assert.rejects(()=>transport.request({kind:'inventory',page:1}),e=>{assert.ok(e instanceof RetryError);assert.equal(e.metadata.cooldown_source,source);assert.equal(e.metadata.attempts,attempts);assert.ok(!JSON.stringify(e.metadata).includes(marker));return true;});assert.equal(calls,attempts);
@@ -54,11 +53,13 @@ test('fallback versus provider source describes the effective cooldown without s
   await new InventorySnapshots(db,'owner','123',initial+3600000,f.clock).invalidate();await assert.rejects(()=>f.gate().assertAvailable(),RetryError);
  }
 });
-test('intermediate 429 establishes a gate before waiting; own bounded safe retry can succeed',async t=>{
- const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);let calls=0,checked=false;
- const clock={...f.clock,sleep:async(ms:number)=>{await assert.rejects(()=>f.gate().assertAvailable(),RetryError);checked=true;await f.clock.sleep(ms);}};
- const transport=await new CloudCookieTransport(f.env,(async()=>new Response(++calls===1?marker:'ok',{status:calls===1?429:200,headers:{'retry-after':'2'}}))as typeof fetch,clock,f.gate()).init();
- assert.equal((await transport.request({kind:'inventory',page:1})).text,'ok');assert.equal(calls,2);assert.equal(checked,true);assert.deepEqual(f.sleeps,[2125]);
+test('the first 429 stops and records a gate; only a deliberate later request can succeed',async t=>{
+ const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);let calls=0;
+ const fetcher=(async()=>new Response(++calls===1?marker:'ok',{status:calls===1?429:200,headers:{'retry-after':'2'}}))as typeof fetch;
+ const transport=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();
+ await assert.rejects(()=>transport.request({kind:'inventory',page:1}),e=>e instanceof RetryError&&e.metadata.attempts===1&&e.metadata.error_origin==='upstream_http');assert.equal(calls,1);assert.deepEqual(f.sleeps,[]);
+ await assert.rejects(()=>f.gate().assertAvailable(),e=>e instanceof RetryError&&e.metadata.error_origin==='saved_provider_cooldown'&&e.metadata.upstream_status===undefined);
+ f.advance(60001);const deliberate=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();assert.equal((await deliberate.request({kind:'inventory',page:1})).text,'ok');assert.equal(calls,2);
 });
 test('atomic upsert preserves the longest cooldown across concurrent Workers and snapshot deletion',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);
@@ -81,7 +82,7 @@ test('missing or failed provider gate storage prevents network access',async t=>
 test('waiting pagination callers receive the shared provider cooldown source rather than a local fallback',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());let loads=0;const expiry=Date.now()+3600000;
  const gate=new ProviderCooldown(db,'owner','123');
- const load=async()=>{loads++;await new Promise(resolve=>setTimeout(resolve,10));const now=Date.now();await gate.record(now+120000,'provider_retry_after');throw new RetryError('fixed synthetic failure',{error_code:'CELLARTRACKER_RATE_LIMITED',upstream_status:429,attempts:1,retry_at:new Date(now+120000).toISOString(),retry_after_seconds:120,cooldown_source:'provider_retry_after',automatic_retry_allowed:false,submission_retry_allowed:false});};
+ const load=async()=>{loads++;await new Promise(resolve=>setTimeout(resolve,10));const now=Date.now();await gate.record(now+120000,'provider_retry_after');throw new RetryError('fixed synthetic failure',{error_code:'CELLARTRACKER_RATE_LIMITED',error_origin:'upstream_http',upstream_status:429,attempts:1,retry_at:new Date(now+120000).toISOString(),retry_after_seconds:120,cooldown_source:'provider_retry_after',automatic_retry_allowed:false,submission_retry_allowed:false});};
  const results=await Promise.allSettled(Array.from({length:2},()=>new InventorySnapshots(db,'owner','123',expiry,undefined,new ProviderCooldown(db,'owner','123')).get(load)));
  assert.equal(loads,1);for(const result of results){assert.equal(result.status,'rejected');if(result.status==='rejected'){assert.ok(result.reason instanceof RetryError);assert.equal(result.reason.metadata.cooldown_source,'provider_retry_after');}}
 });

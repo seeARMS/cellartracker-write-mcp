@@ -20,8 +20,8 @@ export class InventorySnapshots {
     if(inventory.accountId!==this.account)throw new SafeError('Cached inventory differs from the approved account.');
     return {inventory,metadata:{snapshot_id:row.snapshot_id,as_of:new Date(row.fetched_at).toISOString(),expires_at:new Date(row.expires_at).toISOString(),cached:true}};
    }
-   if(snapshotId)throw retryFailure('CELLARTRACKER_SNAPSHOT_EXPIRED',undefined,0,now,now);
-   if(row?.scope===this.scope&&row.retry_at>now)throw retryFailure(row.retry_code==='CELLARTRACKER_RATE_LIMITED'?'CELLARTRACKER_RATE_LIMITED':'CELLARTRACKER_READ_COOLDOWN',undefined,0,row.retry_at,now);
+   if(snapshotId)throw retryFailure('CELLARTRACKER_SNAPSHOT_EXPIRED',undefined,0,now,now,'fallback',{error_origin:'snapshot_state'});
+   if(row?.scope===this.scope&&row.retry_at>now)throw retryFailure(row.retry_code==='CELLARTRACKER_RATE_LIMITED'?'CELLARTRACKER_RATE_LIMITED':'CELLARTRACKER_READ_COOLDOWN',undefined,0,row.retry_at,now,'fallback',{error_origin:'snapshot_state'});
    const lease=crypto.randomUUID();
    const acquired=await this.db.prepare(`INSERT INTO inventory_snapshots(owner,scope,lease_id,lease_until) VALUES(?,?,?,?)
     ON CONFLICT(owner) DO UPDATE SET scope=excluded.scope,body=NULL,snapshot_id=NULL,expires_at=0,lease_id=excluded.lease_id,lease_until=excluded.lease_until,retry_at=0,retry_code=NULL
@@ -42,7 +42,7 @@ export class InventorySnapshots {
      throw error;
     }
    }
-   if(this.clock.now()-started>=snapshotPolicy.waitMs)throw retryFailure('CELLARTRACKER_READ_IN_PROGRESS',undefined,0,this.clock.now()+1000,this.clock.now());
+   if(this.clock.now()-started>=snapshotPolicy.waitMs)throw retryFailure('CELLARTRACKER_READ_IN_PROGRESS',undefined,0,this.clock.now()+1000,this.clock.now(),'fallback',{error_origin:'snapshot_state'});
    await this.clock.sleep(250+Math.floor(this.clock.random()*250));
   }
  }

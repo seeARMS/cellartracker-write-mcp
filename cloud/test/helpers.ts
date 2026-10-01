@@ -2,6 +2,15 @@ import {DatabaseSync} from 'node:sqlite';
 import {readdirSync,readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import type {D1Database,D1Statement,Bottle,ConsumptionDetails,ConsumedBottle,ConsumptionCellar} from '../worker/types.js';
+import {callTool as realCallTool} from '../worker/index.js';
+import type {Environment} from '../worker/types.js';
+import type {RetryClock} from '../worker/backoff.js';
+const clocks=new WeakMap<object,RetryClock>();
+export function callTool(request:Request,env:Environment,name:string,args:Record<string,any>,fetcher:typeof fetch){
+ let clock=env.DB?clocks.get(env.DB):undefined;
+ if(!clock){let now=Date.now();clock={now:()=>now,sleep:async(ms:number)=>{now+=ms;},random:()=>0};if(env.DB)clocks.set(env.DB,clock);}
+ return realCallTool(request,env,name,args,fetcher,clock);
+}
 export class SqliteD1 implements D1Database{
  readonly sqlite=new DatabaseSync(':memory:');
  constructor(){this.sqlite.exec('PRAGMA foreign_keys=ON');for(const name of readdirSync('drizzle').filter(n=>n.endsWith('.sql')).sort())this.sqlite.exec(readFileSync(resolve('drizzle',name),'utf8'));}

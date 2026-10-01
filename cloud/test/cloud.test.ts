@@ -1,9 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import worker,{callTool} from '../worker/index.js';
+import worker from '../worker/index.js';
 import {CloudCookieTransport,buildRequest} from '../worker/transport.js';
 import {CellarTracker} from '../worker/cellar.js';
-import {SqliteD1,upstream,bottle,inventoryHtml} from './helpers.js';
+import {callTool,SqliteD1,upstream,bottle,inventoryHtml} from './helpers.js';
 const request=(user:string|null='owner')=>new Request('https://synthetic.invalid/mcp',{method:'POST',headers:user?{'oai-authenticated-user-id':user}:{}});
 const configured=(db?:SqliteD1)=>({DB:db,CELLARTRACKER_OWNER_USER_ID:'owner',CELLARTRACKER_EXPECTED_ACCOUNT_ID:'123',CELLARTRACKER_READS_ENABLED:'true',CELLARTRACKER_WRITES_ENABLED:'false',CELLARTRACKER_SESSION_EXPIRES_AT:new Date(Date.now()+3600_000).toISOString(),CELLARTRACKER_SESSION_JSON:JSON.stringify({cookie:'fixture=synthetic-only',userAgent:'Synthetic Test Agent'})});
 async function rpc(method:string,params:any={},env:any={},user:string|null='owner'){

@@ -36,7 +36,7 @@ export class CloudStore {
   ]);}catch{throw new SafeError('Another consumption is running or unresolved. Read its status before any new execution.');}
   if(results[1].meta.changes!==1){await this.unlock(id);throw new SafeError('The plan is expired, canceled, or already submitted. Inspect its status.');}
  }
- async submit(id:string){const r=await this.db.prepare("UPDATE operations SET status='submitted', submitted_at=? WHERE id=? AND owner=? AND status='checking'").bind(Date.now(),id,this.owner).run();return r.meta.changes===1;}
+ async submit(id:string){const now=Date.now();const r=await this.db.prepare("UPDATE operations SET status='submitted', submitted_at=? WHERE id=? AND owner=? AND status='checking' AND expires_at>?").bind(now,id,this.owner,now).run();return r.meta.changes===1;}
  async outcome(id:string,status:string,observation:Observation){await this.db.prepare('UPDATE operations SET status=?, observation=? WHERE id=? AND owner=?').bind(status,JSON.stringify(observation),id,this.owner).run();}
  async failBeforeSubmission(id:string,observation:Observation){await this.db.prepare("UPDATE operations SET status='conflict', observation=? WHERE id=? AND owner=? AND status='checking' AND submitted_at IS NULL").bind(JSON.stringify(observation),id,this.owner).run();await this.unlock(id);}
  async unlock(id:string){await this.db.prepare('DELETE FROM account_locks WHERE owner=? AND operation_id=?').bind(this.owner,id).run();}

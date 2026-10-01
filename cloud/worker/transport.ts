@@ -25,7 +25,7 @@ export function buildRequest(r:BrowserRequest){
  return {path:`/bulkconsume.asp?Consumed=${Number(month)}%2F${Number(day)}%2F${year}&iConsumptionType=1&ConsumptionNote=${latin(r.details.note)}&Revenue=&RevenueCurrency=${r.currency}`,method:'POST',body:'BulkAction=&'+r.ids.map(id=>'iInventory='+id).join('&')};
 }
 export class CloudCookieTransport implements Transport {
- private requests=0;private jar!:CookieJar;private userAgent='';private deadline=0;
+ private requests=0;private successfulReads=0;private jar!:CookieJar;private userAgent='';private deadline=0;
  constructor(private env:Environment,private fetcher:typeof fetch=fetch,private clock:RetryClock=realClock,private gate?:ProviderGate){}
  async init(){
   const deadline=Date.parse(this.env.CELLARTRACKER_SESSION_EXPIRES_AT??'');
@@ -55,14 +55,20 @@ export class CloudCookieTransport implements Transport {
   const deadline=Math.min(this.deadline,this.clock.now()+readRetryPolicy.maxElapsedMs);
   for(let attempt=1;;attempt++){
    if(Date.parse(this.env.CELLARTRACKER_SESSION_EXPIRES_AT??'')<=this.clock.now())throw new SafeError('The approved session cutoff passed. No further upstream request is permitted.');
-   const remaining=deadline-this.clock.now();
+   let remaining=deadline-this.clock.now();
    if(remaining<=0)throw retryFailure('CELLARTRACKER_READ_DEADLINE',undefined,attempt-1,this.clock.now()+60000,this.clock.now());
    // Every attempt, including form/history reads and the sole POST, obeys the shared gate.
    // A pre-existing cooldown returns immediately; only this call's own safe retries may wait.
    await this.gate?.assertAvailable();
+   await this.gate?.pace?.(deadline);
+   await this.gate?.assertAvailable();
+   if(Date.parse(this.env.CELLARTRACKER_SESSION_EXPIRES_AT??'')<=this.clock.now())throw new SafeError('The approved session cutoff passed. No further upstream request is permitted.');
+   remaining=deadline-this.clock.now();
+   if(remaining<=0)throw retryFailure('CELLARTRACKER_READ_DEADLINE',undefined,attempt-1,this.clock.now()+60000,this.clock.now());
    try{
     const result=await this.attempt(request,Math.min(readRetryPolicy.attemptTimeoutMs,remaining));
     if(read&&this.clock.now()>deadline)throw retryFailure('CELLARTRACKER_READ_DEADLINE',undefined,attempt,this.clock.now()+60000,this.clock.now());
+    if(read)this.successfulReads++;
     return result;
    }
    catch(error){
@@ -72,7 +78,8 @@ export class CloudCookieTransport implements Transport {
     const code=transient?error.code:(error as Error).message.match(/^\[([^\]]+)\]/)![1];
     const status=transient?error.status:undefined;
     const delay=backoffMs(attempt,transient?error.delayMs:undefined,this.clock.random());
-    const exhausted=!read||attempt>=readRetryPolicy.maxAttempts||this.clock.now()+delay+1>=deadline;
+    // HTTP 429 is a provider refusal, not a transient retry invitation. Stop immediately.
+    const exhausted=status===429||!read||attempt>=readRetryPolicy.maxAttempts||this.clock.now()+delay+1>=deadline;
     const wait=exhausted?Math.max(60000,delay):delay;
     const retryAt=this.clock.now()+wait;
     const source=cooldownSource(attempt,transient?error.delayMs:undefined,exhausted);
@@ -83,7 +90,7 @@ export class CloudCookieTransport implements Transport {
     }
     if(exhausted){
      // A cooldown prevents fresh calls from immediately restarting an exhausted read.
-     throw retryFailure(code,status,attempt,retryAt,this.clock.now(),source);
+     throw retryFailure(code,status,attempt,retryAt,this.clock.now(),source,{error_origin:transient?'upstream_http':'read_failure',request_kind:request.kind,...('page'in request?{upstream_page:request.page}:{}),total_upstream_attempts:this.requests,successful_upstream_reads:this.successfulReads});
     }
     await this.clock.sleep(delay);
    }
