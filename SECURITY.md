@@ -2,6 +2,8 @@
 
 This server is intended for one local user and one Chrome profile. It is not a multi-user or remotely hosted service.
 
+The separate `cloud/` adapter has its own owner-private hosting and session requirements, documented in [cloud/README.md](cloud/README.md). It does not expose or proxy the local bridge.
+
 Direct cookie authentication stores a private session jar outside the repository and sends cookies only to the fixed CellarTracker HTTPS origin. No redirects are followed. A session file is equivalent to a login credential; refresh it after expiry or revoke it by signing out through the site. A source HAR may also contain credentials and should be removed after import.
 
 The optional companion grants the paired server read access to inventory and consumption history, and write access to creating bottles, bottle locations/bins, and consumption records. Cookies and passwords stay in Chrome; pairing tokens and operation snapshots are sensitive local files. Never share or commit them. Do not expose port 17843 on a network, proxy it, or bind it to another address.
