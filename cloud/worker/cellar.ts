@@ -71,7 +71,7 @@ export class CellarTracker implements ConsumptionCellar {
     }
     return {accountId:expected!.accountId,records};
   }
-  async consume(ids: string[], details: ConsumptionDetails) {
+  async prepareConsumption(details: ConsumptionDetails) {
     validateConsumption(details);
     const form=await this.transport.request({kind:'consumptionForm'});this.checkResponse(form.status,form.url);
     const $=load(form.text);const f=$('#bulk_popup_form');
@@ -79,6 +79,11 @@ export class CellarTracker implements ConsumptionCellar {
     if(f.attr('action')!=='bulkconsume.asp'||f.attr('method')?.toLowerCase()!=='post'||required.some(name=>f.find(`[name="${name}"]`).length!==1)||f.find('[name]').toArray().some(e=>!required.includes($(e).attr('name')!)))throw new SafeError('Consumption form contract changed. No write submitted.');
     if(!f.find(`[name="iConsumptionType"] option[value="${details.type}"]`).length)throw new SafeError('Consumption reason is not supported by the live form.');
     const currency=String(f.find('[name="RevenueCurrency"]').val());if(!/^[A-Z]{3}$/.test(currency))throw new SafeError('Cannot read the consumption form currency.');
+    return currency;
+  }
+  async consume(ids:string[],details:ConsumptionDetails,preparedCurrency?:string){
+    validateConsumption(details);
+    const currency=preparedCurrency??await this.prepareConsumption(details);
     const response=await this.transport.request({kind:'consume',ids,details,currency});this.checkResponse(response.status,response.url);
     const xml=load(response.text,{xml:true});
     if(xml('error').text().trim()||/<!doctype html|<html[\s>]/i.test(response.text))throw new SafeError('Unexpected or rejected consumption response; reconcile with history.');

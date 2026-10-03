@@ -73,6 +73,6 @@ test('retry diagnostics are returned as structured MCP metadata without upstream
  await assert.rejects(()=>cache.get(async()=>{throw retryFailure('CELLARTRACKER_RATE_LIMITED',429,3,now+60000,now);}));
  const req=new Request('https://synthetic.invalid/mcp',{method:'POST',headers:{'oai-authenticated-user-id':'owner'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'list_bottles',arguments:{}}})});
  const reply=await(await worker.fetch(req,env)).json()as any;
- assert.equal(reply.result.isError,true);assert.equal(reply.result.structuredContent.error_code,'CELLARTRACKER_RATE_LIMITED');assert.equal(reply.result.structuredContent.automatic_retry_allowed,false);
+ assert.equal(reply.result.isError,true);assert.equal(reply.result.structuredContent.error_code,'CELLARTRACKER_RATE_LIMITED');assert.equal(reply.result.structuredContent.automatic_retry_allowed,true);
  assert.ok(!JSON.stringify(reply).includes('synthetic-only'));
 });

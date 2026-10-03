@@ -1,7 +1,7 @@
 import {CellarTracker} from './cellar.js';
 import {CloudCookieTransport} from './transport.js';
 import {CloudStore} from './store.js';
-import {CloudConsumption} from './consumption.js';
+import {summarize,CloudConsumption} from './consumption.js';
 import {SafeError,AccessError,RetryError,type Environment} from './types.js';
 import {InventorySnapshots} from './snapshots.js';
 import {ProviderCooldown} from './provider-gate.js';
@@ -29,18 +29,39 @@ function identity(request:Request,env:Environment,requireOwner=true){
  if(requireOwner&&(!env.CELLARTRACKER_OWNER_USER_ID||user!==env.CELLARTRACKER_OWNER_USER_ID))throw new AccessError('Cloud owner binding is missing or does not match this signed-in user.',403);
  return user;
 }
-function setupStatus(env:Environment){return {reads_enabled:env.CELLARTRACKER_READS_ENABLED==='true',writes_enabled:env.CELLARTRACKER_WRITES_ENABLED==='true',owner_bound:!!env.CELLARTRACKER_OWNER_USER_ID,account_bound:/^\d+$/.test(env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??''),session_configured:!!env.CELLARTRACKER_SESSION_JSON,approved_session_expiry_valid:Number.isFinite(Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT??''))&&Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!)>Date.now(),storage_ready:!!env.DB,transport:'direct-https',authenticated_inventory_verified:false};}
+function setupStatus(env:Environment){return {reads_enabled:env.CELLARTRACKER_READS_ENABLED==='true',writes_enabled:env.CELLARTRACKER_WRITES_ENABLED==='true',owner_bound:!!env.CELLARTRACKER_OWNER_USER_ID,account_bound:/^\d+$/.test(env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??''),session_configured:!!env.CELLARTRACKER_SESSION_JSON,approved_session_expiry_valid:Number.isFinite(Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT??''))&&Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!)>Date.now(),storage_ready:!!env.DB,transport:'direct-https',adapter_version:'0.2.0',retry_policy:'durable-cooldown-v2',authenticated_inventory_verified:false};}
 export async function callTool(request:Request,env:Environment,name:string,args:Record<string,any>,fetcher:typeof fetch=fetch,clock:RetryClock=realClock){
  const tool=tools.find(t=>t.name===name);if(!tool)throw new SafeError('Unknown CellarTracker tool.');validate(tool.inputSchema,args);
  if(name==='connection_status'){
-  const owner=identity(request,env,!!env.CELLARTRACKER_OWNER_USER_ID);return {...setupStatus(env),...(!env.CELLARTRACKER_OWNER_USER_ID?{caller_site_user_id:owner}:{})};
+  const owner=identity(request,env,!!env.CELLARTRACKER_OWNER_USER_ID);return {...setupStatus(env),...(!env.CELLARTRACKER_OWNER_USER_ID?{caller_site_user_id:owner}:env.DB?{provider:await new ProviderCooldown(env.DB,owner,env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??'unbound',clock).status()}:{})};
  }
  const owner=identity(request,env);
  if(env.CELLARTRACKER_READS_ENABLED!=='true')throw new SafeError('Cloud CellarTracker access is disabled pending specific activation approval and secure session setup.');
  if(name==='execute_consumption'&&env.CELLARTRACKER_WRITES_ENABLED!=='true')throw new SafeError('Cloud consumption is disabled. It requires separate activation approval and a specific bottle-consumption instruction.');
  const account=env.CELLARTRACKER_EXPECTED_ACCOUNT_ID;
  if(name!=='verify_connection'&&!/^\d+$/.test(account??''))throw new SafeError('Bind the approved CellarTracker account before reading cellar data or planning consumption.');
+ if(['queue_consumption_request','get_consumption_request'].includes(name)){
+  if(!env.DB)throw new SafeError('Cloud operation storage is unavailable.');
+  const store=new CloudStore(env.DB,owner,clock);
+  if(name==='queue_consumption_request'){
+   const existing=await store.byRequest(args.request_id);
+   if(existing){
+    if(existing.details.date!==args.date||existing.details.note!==(args.note??'')||existing.bottles.length!==args.quantity)throw new SafeError('This request ID already identifies different consumption details.');
+    return {operation:summarize(existing),background_worker_scheduled:false};
+   }
+   return store.pending.saveIntent(args as any);
+  }
+  const op=await store.byRequest(args.request_id);
+  if(op)return {operation:summarize(op),background_worker_scheduled:false};
+  return store.pending.get(args.request_id);
+ }
  const gate=env.DB?new ProviderCooldown(env.DB,owner,/^\d+$/.test(account??'')?account!:'unbound',clock):undefined;
+ if(name==='resume_provider_reads'){
+  if(!env.DB)throw new SafeError('Cloud provider storage is unavailable.');
+  // Explicit owner acknowledgement does not clear any rate-limit cooldown or change auth.
+  const r=await env.DB.prepare('UPDATE provider_state SET blocked_code=NULL WHERE owner=? AND blocked_code=?').bind(owner,args.reviewed_error_code).run();
+  return {review_acknowledged:r.meta.changes===1,cooldown_preserved:true,authenticated:false};
+ }
  const cellar=new CellarTracker(await new CloudCookieTransport(env,fetcher,clock,gate).init());
  if(!gate)throw new SafeError('Cloud provider cooldown storage is unavailable. No upstream request is permitted.');
  const snapshots=env.DB&&account?new InventorySnapshots(env.DB,owner,account,Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!),clock,gate):undefined;
@@ -59,7 +80,7 @@ export async function callTool(request:Request,env:Environment,name:string,args:
   const offset=args.offset??0,limit=args.limit??50;return {total:bottles.length,offset,limit,bottles:bottles.slice(offset,offset+limit),snapshot:snapshot!.metadata};
  }
  if(!env.DB)throw new SafeError('Cloud operation storage is unavailable. No consumption can be submitted.');
- const consumption=new CloudConsumption(cellar,new CloudStore(env.DB,owner),account!);
+ const consumption=new CloudConsumption(cellar,new CloudStore(env.DB,owner,clock),account!,clock);
  if(name==='plan_consumption')return consumption.plan(args as any);
  if(name==='execute_consumption'){
   await snapshots!.invalidate();
@@ -86,7 +107,7 @@ export default {async fetch(request:Request,env:Environment){
  const reply=(result:unknown)=>json({jsonrpc:'2.0',id:rpc.id,result});
  if(rpc.method==='initialize'){
   const offered=rpc.params?.protocolVersion;const accepted=['2024-11-05','2025-03-26','2025-06-18','2025-11-25','2026-07-28'];
-  return reply({protocolVersion:accepted.includes(offered)?offered:'2025-06-18',capabilities:{tools:{listChanged:false}},serverInfo:{name:'cellartracker-cloud',version:'0.1.0'},instructions});
+  return reply({protocolVersion:accepted.includes(offered)?offered:'2025-06-18',capabilities:{tools:{listChanged:false}},serverInfo:{name:'cellartracker-cloud',version:'0.2.0'},instructions});
  }
  if(rpc.method==='ping')return reply({});
  if(rpc.method==='tools/list')return reply({tools});

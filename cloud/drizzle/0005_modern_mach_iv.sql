@@ -1,0 +1,1 @@
+ALTER TABLE `provider_cooldowns` ADD `retry_code` text DEFAULT 'CELLARTRACKER_RATE_LIMITED' NOT NULL;

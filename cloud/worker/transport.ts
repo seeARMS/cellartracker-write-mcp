@@ -57,6 +57,9 @@ export class CloudCookieTransport implements Transport {
    if(Date.parse(this.env.CELLARTRACKER_SESSION_EXPIRES_AT??'')<=this.clock.now())throw new SafeError('The approved session cutoff passed. No further upstream request is permitted.');
    let remaining=deadline-this.clock.now();
    if(remaining<=0)throw retryFailure('CELLARTRACKER_READ_DEADLINE',undefined,attempt-1,this.clock.now()+60000,this.clock.now());
+   let lease:string|undefined;
+   try{
+   lease=await this.gate?.acquire?.(deadline);
    // Every attempt, including form/history reads and the sole POST, obeys the shared gate.
    // A pre-existing cooldown returns immediately; only this call's own safe retries may wait.
    await this.gate?.assertAvailable();
@@ -65,7 +68,6 @@ export class CloudCookieTransport implements Transport {
    if(Date.parse(this.env.CELLARTRACKER_SESSION_EXPIRES_AT??'')<=this.clock.now())throw new SafeError('The approved session cutoff passed. No further upstream request is permitted.');
    remaining=deadline-this.clock.now();
    if(remaining<=0)throw retryFailure('CELLARTRACKER_READ_DEADLINE',undefined,attempt-1,this.clock.now()+60000,this.clock.now());
-   try{
     const result=await this.attempt(request,Math.min(readRetryPolicy.attemptTimeoutMs,remaining));
     if(read&&this.clock.now()>deadline)throw retryFailure('CELLARTRACKER_READ_DEADLINE',undefined,attempt,this.clock.now()+60000,this.clock.now());
     if(read)this.successfulReads++;
@@ -78,22 +80,27 @@ export class CloudCookieTransport implements Transport {
     const code=transient?error.code:(error as Error).message.match(/^\[([^\]]+)\]/)![1];
     const status=transient?error.status:undefined;
     const delay=backoffMs(attempt,transient?error.delayMs:undefined,this.clock.random());
-    // HTTP 429 is a provider refusal, not a transient retry invitation. Stop immediately.
+    // A 429 opens the durable circuit. Resume on a later invocation, never before Retry-After.
     const exhausted=status===429||!read||attempt>=readRetryPolicy.maxAttempts||this.clock.now()+delay+1>=deadline;
     const wait=exhausted?Math.max(60000,delay):delay;
-    const retryAt=this.clock.now()+wait;
-    const source=cooldownSource(attempt,transient?error.delayMs:undefined,exhausted);
-    if(status===429)await this.gate?.record(retryAt,source);
+    let retryAt=this.clock.now()+wait;
+    let source=cooldownSource(attempt,transient?error.delayMs:undefined,exhausted);
+    let streak:number|undefined;
+    if(status===429){
+     const circuit=await this.gate?.rateLimited?.(transient?error.delayMs:undefined);
+     if(circuit){retryAt=circuit.retryAt;source=circuit.source;streak=circuit.streak;}
+     else await this.gate?.record(retryAt,source);
+    }else if(exhausted)await this.gate?.record(retryAt,source,code);
     if(!read){
-     if(transient)throw new SafeError(`[${error.code}] CellarTracker rejected the single consumption submission. No automatic retry is allowed; inspect the saved consumption status.`);
+     if(transient)throw new SafeError(`[${error.code}] The single consumption submission received an unsuccessful response. Its outcome may be uncertain; inspect the saved status. It will never be replayed.`);
      throw error;
     }
     if(exhausted){
      // A cooldown prevents fresh calls from immediately restarting an exhausted read.
-     throw retryFailure(code,status,attempt,retryAt,this.clock.now(),source,{error_origin:transient?'upstream_http':'read_failure',request_kind:request.kind,...('page'in request?{upstream_page:request.page}:{}),total_upstream_attempts:this.requests,successful_upstream_reads:this.successfulReads});
+     throw retryFailure(code,status,attempt,retryAt,this.clock.now(),source,{error_origin:transient?'upstream_http':'read_failure',response_classification:status===429?'http_rate_limit':transient?'service_error':'network_failure',...(streak?{rate_limit_streak:streak}:{}),request_kind:request.kind,...('page'in request?{upstream_page:request.page}:{}),total_upstream_attempts:this.requests,successful_upstream_reads:this.successfulReads});
     }
     await this.clock.sleep(delay);
-   }
+   }finally{if(lease)await this.gate?.release?.(lease);}
   }
  }
  private async attempt(request:BrowserRequest,timeoutMs:number){
@@ -115,20 +122,23 @@ export class CloudCookieTransport implements Transport {
    }
    throw new SafeError('[CELLARTRACKER_FETCH_FAILED] The upstream request failed before an HTTP response was available. No automatic retry is allowed; inspect saved status if consumption was submitted.');
   }
+  // Close rejected/challenge response streams without inspecting their bodies.
+  if(response.status!==200||response.headers.get('cf-mitigated')==='challenge'){try{await response.body?.cancel();}catch{}}
   // Never follow redirects or expose their destinations, nor accept their cookies/body.
   if(response.status>=300&&response.status<400){
    let signIn=false;
    try{const destination=new URL(response.headers.get('location')??'',url);signIn=destination.origin===origin&&destination.pathname.toLowerCase()==='/login.asp';}catch{}
-   if(signIn)throw new SafeError('[CELLARTRACKER_AUTHENTICATION_REQUIRED] CellarTracker redirected this request to its sign-in page. It was not followed. Renew the session only through the approved user-only secure flow.');
+   if(signIn){await this.gate?.block?.('CELLARTRACKER_AUTHENTICATION_REQUIRED');throw new SafeError('[CELLARTRACKER_AUTHENTICATION_REQUIRED] CellarTracker redirected this request to its sign-in page. It was not followed. Renew the session only through the approved user-only secure flow.');}
    throw new SafeError('[CELLARTRACKER_UNEXPECTED_REDIRECT] CellarTracker returned a redirect. It was not followed. Authentication or the fixed endpoint may require review.');
   }
   if(response.redirected||(response.url&&response.url!==url))throw new SafeError('[CELLARTRACKER_ENDPOINT_CHANGED] The response did not remain on the exact approved endpoint. It was rejected.');
   if(response.headers.get('cf-mitigated')==='challenge'){
    if(response.status===429){const delay=retryAfterMs(response.headers.get('retry-after'),this.clock.now());await this.gate?.record(this.clock.now()+Math.max(60000,backoffMs(1,delay,this.clock.random())),cooldownSource(1,delay,true));}
+   await this.gate?.block?.('CELLARTRACKER_BROWSER_CHALLENGE');
    throw new SafeError('[CELLARTRACKER_BROWSER_CHALLENGE] The upstream service requires a browser challenge for this cloud request. No challenge bypass or automatic retry is attempted.');
   }
-  if(response.status===401)throw new SafeError('[CELLARTRACKER_AUTHENTICATION_REQUIRED] CellarTracker rejected this request as unauthenticated. Renew the session only through the approved user-only secure flow.');
-  if(response.status===403)throw new SafeError('[CELLARTRACKER_ACCESS_DENIED] CellarTracker denied the cloud request. The response does not establish whether the account session or cloud access was rejected.');
+  if(response.status===401){await this.gate?.block?.('CELLARTRACKER_AUTHENTICATION_REQUIRED');throw new SafeError('[CELLARTRACKER_AUTHENTICATION_REQUIRED] CellarTracker rejected this request as unauthenticated. Renew the session only through the approved user-only secure flow.');}
+  if(response.status===403){await this.gate?.block?.('CELLARTRACKER_ACCESS_DENIED');throw new SafeError('[CELLARTRACKER_ACCESS_DENIED] CellarTracker denied the cloud request. The response does not establish whether the account session or cloud access was rejected.');}
   if(response.status===429||(response.status>=500&&response.status<=599)){
    const delay=retryAfterMs(response.headers.get('retry-after'),this.clock.now());
    // Error bodies and refresh cookies are never consumed or accepted on failed attempts.

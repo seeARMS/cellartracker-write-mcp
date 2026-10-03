@@ -32,7 +32,7 @@ test('exhaustion is bounded and returns sanitized retry metadata with a cooldown
  const f=fixture([429]);const t=await new CloudCookieTransport(f.env,f.fetcher,f.clock).init();
  await assert.rejects(()=>t.request({kind:'inventory',page:1}),error=>{
   assert.ok(error instanceof RetryError);assert.equal(error.metadata.error_code,'CELLARTRACKER_RATE_LIMITED');assert.equal(error.metadata.upstream_status,429);
-  assert.equal(error.metadata.attempts,1);assert.equal(error.metadata.retry_after_seconds,60);assert.equal(error.metadata.automatic_retry_allowed,false);assert.equal(error.metadata.error_origin,'upstream_http');assert.equal(error.metadata.total_upstream_attempts,1);
+  assert.equal(error.metadata.attempts,1);assert.equal(error.metadata.retry_after_seconds,60);assert.equal(error.metadata.automatic_retry_allowed,true);assert.equal(error.metadata.error_origin,'upstream_http');assert.equal(error.metadata.total_upstream_attempts,1);
   assert.ok(!JSON.stringify(error.metadata).includes(marker));assert.ok(!error.message.includes(marker));return true;
  });
  assert.equal(f.calls,1);assert.deepEqual(f.sleeps,[]);
