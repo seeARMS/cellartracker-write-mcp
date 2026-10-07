@@ -1,3 +1,4 @@
+import {sessionDiagnostics} from './diagnostics.js';
 import {CellarTracker} from './cellar.js';
 import {CloudCookieTransport} from './transport.js';
 import {CloudStore} from './store.js';
@@ -33,7 +34,7 @@ function setupStatus(env:Environment){return {reads_enabled:env.CELLARTRACKER_RE
 export async function callTool(request:Request,env:Environment,name:string,args:Record<string,any>,fetcher:typeof fetch=fetch,clock:RetryClock=realClock){
  const tool=tools.find(t=>t.name===name);if(!tool)throw new SafeError('Unknown CellarTracker tool.');validate(tool.inputSchema,args);
  if(name==='connection_status'){
-  const owner=identity(request,env,!!env.CELLARTRACKER_OWNER_USER_ID);return {...setupStatus(env),...(!env.CELLARTRACKER_OWNER_USER_ID?{caller_site_user_id:owner}:env.DB?{provider:await new ProviderCooldown(env.DB,owner,env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??'unbound',clock).status()}:{})};
+  const owner=identity(request,env,!!env.CELLARTRACKER_OWNER_USER_ID);return {...setupStatus(env),...(env.CELLARTRACKER_OWNER_USER_ID?{request_headers:sessionDiagnostics(env.CELLARTRACKER_SESSION_JSON)}:{}),...(!env.CELLARTRACKER_OWNER_USER_ID?{caller_site_user_id:owner}:env.DB?{provider:await new ProviderCooldown(env.DB,owner,env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??'unbound',clock).status()}:{})};
  }
  const owner=identity(request,env);
  if(env.CELLARTRACKER_READS_ENABLED!=='true')throw new SafeError('Cloud CellarTracker access is disabled pending specific activation approval and secure session setup.');

@@ -1,8 +1,9 @@
+import {responseDiagnostics,type ResponseDiagnostics} from './diagnostics.js';
 import {CookieJar} from 'tough-cookie';
 import {SafeError,type BrowserRequest,type Environment,type ProviderGate,type Transport} from './types.js';
 import {validateConsumption} from './validation.js';
 import {backoffMs,cooldownSource,realClock,readRetryPolicy,retryAfterMs,retryFailure,type RetryClock} from './backoff.js';
-class TransientResponse extends Error {constructor(readonly code:string,readonly status:number,readonly delayMs:number|undefined){super(code);}}
+class TransientResponse extends Error {constructor(readonly code:string,readonly status:number,readonly delayMs:number|undefined,readonly metadata:ResponseDiagnostics){super(code);}}
 const origin='https://www.cellartracker.com';
 const latin=(value:string)=>{
  let encoded='';for(let i=0;i<value.length;i++){const code=value.charCodeAt(i);encoded+=code>255&&code!==381?'&#'+code+';':value[i];}
@@ -98,7 +99,7 @@ export class CloudCookieTransport implements Transport {
     }
     if(exhausted){
      // A cooldown prevents fresh calls from immediately restarting an exhausted read.
-     throw retryFailure(code,status,attempt,retryAt,this.clock.now(),source,{error_origin:transient?'upstream_http':'read_failure',response_classification:status===429?'http_rate_limit':transient?'service_error':'network_failure',...(streak?{rate_limit_streak:streak}:{}),request_kind:request.kind,...('page'in request?{upstream_page:request.page}:{}),total_upstream_attempts:this.requests,successful_upstream_reads:this.successfulReads});
+     throw retryFailure(code,status,attempt,retryAt,this.clock.now(),source,{error_origin:transient?'upstream_http':'read_failure',response_classification:status===429?'http_rate_limit':transient?'service_error':'network_failure',...(transient?{response_metadata:error.metadata}:{}),...(streak?{rate_limit_streak:streak}:{}),request_kind:request.kind,...('page'in request?{upstream_page:request.page}:{}),total_upstream_attempts:this.requests,successful_upstream_reads:this.successfulReads});
     }
     await this.clock.sleep(delay);
    }finally{if(lease)await this.gate?.release?.(lease);}
@@ -144,7 +145,7 @@ export class CloudCookieTransport implements Transport {
    const delay=retryAfterMs(response.headers.get('retry-after'),this.clock.now());
    // Error bodies and refresh cookies are never consumed or accepted on failed attempts.
    try{await response.body?.cancel();}catch{}
-   throw new TransientResponse(response.status===429?'CELLARTRACKER_RATE_LIMITED':'CELLARTRACKER_SERVICE_ERROR',response.status,delay);
+   throw new TransientResponse(response.status===429?'CELLARTRACKER_RATE_LIMITED':'CELLARTRACKER_SERVICE_ERROR',response.status,delay,responseDiagnostics(response.headers,delay));
   }
   if(response.status!==200)throw new SafeError('[CELLARTRACKER_HTTP_ERROR] CellarTracker returned an unexpected HTTP response. It was rejected.');
   for(const value of response.headers.getSetCookie?.()??[])await this.jar.setCookie(value,url,{ignoreError:true});
