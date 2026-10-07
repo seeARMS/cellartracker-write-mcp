@@ -32,7 +32,7 @@ test('exhaustion is bounded and returns sanitized retry metadata with a cooldown
  const f=fixture([429]);const t=await new CloudCookieTransport(f.env,f.fetcher,f.clock).init();
  await assert.rejects(()=>t.request({kind:'inventory',page:1}),error=>{
   assert.ok(error instanceof RetryError);assert.equal(error.metadata.error_code,'CELLARTRACKER_RATE_LIMITED');assert.equal(error.metadata.upstream_status,429);
-  assert.equal(error.metadata.attempts,1);assert.equal(error.metadata.retry_after_seconds,60);assert.equal(error.metadata.automatic_retry_allowed,true);assert.equal(error.metadata.error_origin,'upstream_http');assert.equal(error.metadata.total_upstream_attempts,1);
+  assert.equal(error.metadata.attempts,1);assert.equal(error.metadata.retry_after_seconds,900);assert.equal(error.metadata.automatic_retry_allowed,false);assert.equal(error.metadata.error_origin,'upstream_http');assert.equal(error.metadata.total_upstream_attempts,1);
   assert.ok(!JSON.stringify(error.metadata).includes(marker));assert.ok(!error.message.includes(marker));return true;
  });
  assert.equal(f.calls,1);assert.deepEqual(f.sleeps,[]);
@@ -46,14 +46,14 @@ test('slow upstream attempts count against elapsed deadline',async()=>{
  const f=fixture([503]);let calls=0;
  const fetcher=(async()=>{calls++;await f.clock.sleep(20000);return new Response(marker,{status:503});})as typeof fetch;
  const t=await new CloudCookieTransport(f.env,fetcher,f.clock).init();
- await assert.rejects(()=>t.request({kind:'inventory',page:1}),RetryError);assert.equal(calls,2);
+ await assert.rejects(()=>t.request({kind:'inventory',page:1}),RetryError);assert.equal(calls,1);
  // Real fetch respects the capped AbortController deadline; simulated fetch deliberately ignores it.
- assert.ok(f.sleeps[1]<10000);
+ assert.deepEqual(f.sleeps,[20000]);
 });
-test('transient 5xx and network failures retry safe reads, authentication and challenges do not',async()=>{
- const f=fixture([503,502,200]);const t=await new CloudCookieTransport(f.env,f.fetcher,f.clock).init();assert.equal((await t.request({kind:'inventory',page:1})).text,'ok');assert.equal(f.calls,3);
+test('transient 5xx and network failures stop without retrying safe reads, authentication and challenges do not',async()=>{
+ const f=fixture([503,502,200]);const t=await new CloudCookieTransport(f.env,f.fetcher,f.clock).init();await assert.rejects(()=>t.request({kind:'inventory',page:1}),RetryError);assert.equal(f.calls,1);
  for(const status of [401,403,302,404]){const c=fixture([status]);const t=await new CloudCookieTransport(c.env,c.fetcher,c.clock).init();await assert.rejects(()=>t.request({kind:'inventory',page:1}));assert.equal(c.calls,1);assert.deepEqual(c.sleeps,[]);}
- const c=fixture([200]);let calls=0;const transport=await new CloudCookieTransport(c.env,(async()=>{if(++calls===1)throw Error(marker);return new Response('ok');})as typeof fetch,c.clock).init();assert.equal((await transport.request({kind:'inventory',page:1})).text,'ok');assert.equal(calls,2);
+ const c=fixture([200]);let calls=0;const transport=await new CloudCookieTransport(c.env,(async()=>{if(++calls===1)throw Error(marker);return new Response('ok');})as typeof fetch,c.clock).init();await assert.rejects(()=>transport.request({kind:'inventory',page:1}),RetryError);assert.equal(calls,1);
 });
 test('consumption POST is never retried for 429, 5xx, network failure or timeout',async()=>{
  for(const status of [429,503,0,-1]){
@@ -64,12 +64,12 @@ test('consumption POST is never retried for 429, 5xx, network failure or timeout
   assert.equal(calls,1);assert.deepEqual(f.sleeps,[]);
  }
 });
-test('approved session cutoff is rechecked before every retry',async()=>{
+test('provider failure before session cutoff stops without an automatic retry',async()=>{
  const f=fixture([429,200],'2');f.env.CELLARTRACKER_SESSION_EXPIRES_AT=new Date(initial+1000).toISOString();
  let calls=0;const fetcher=(async()=>{calls++;return new Response(marker,{status:503,headers:{'retry-after':'2'}});})as typeof fetch;
- const t=await new CloudCookieTransport(f.env,fetcher,f.clock).init();await assert.rejects(()=>t.request({kind:'inventory',page:1}),/cutoff passed/);assert.equal(calls,1);
+ const t=await new CloudCookieTransport(f.env,fetcher,f.clock).init();await assert.rejects(()=>t.request({kind:'inventory',page:1}),RetryError);assert.equal(calls,1);
 });
 test('successful responses arriving past the read deadline are rejected',async()=>{
- const f=fixture([200]);const fetcher=(async()=>{await f.clock.sleep(31000);return new Response('too late');})as typeof fetch;
+ const f=fixture([200]);const fetcher=(async()=>{await f.clock.sleep(46000);return new Response('too late');})as typeof fetch;
  const t=await new CloudCookieTransport(f.env,fetcher,f.clock).init();await assert.rejects(()=>t.request({kind:'inventory',page:1}),error=>error instanceof RetryError&&error.metadata.error_code==='CELLARTRACKER_READ_DEADLINE');
 });

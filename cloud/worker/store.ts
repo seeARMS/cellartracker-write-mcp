@@ -1,4 +1,4 @@
-import {realClock,type RetryClock} from './backoff.js';
+import {realClock,readRetryPolicy,type RetryClock} from './backoff.js';
 import {PendingRequests} from './pending.js';
 import {SafeError,type Bottle,type ConsumptionDetails,type D1Database,type RetryMetadata} from './types.js';
 export interface Operation {
@@ -41,7 +41,7 @@ export class CloudStore {
   const token=crypto.randomUUID();let results;
   try{results=await this.db.batch([
    this.db.prepare('INSERT INTO account_locks(owner,operation_id) VALUES(?,?)').bind(this.owner,id),
-   this.db.prepare("UPDATE operations SET status='checking',checking_token=?,checking_until=? WHERE id=? AND owner=? AND status='planned' AND expires_at>?").bind(token,this.clock.now()+120000,id,this.owner,this.clock.now())
+   this.db.prepare("UPDATE operations SET status='checking',checking_token=?,checking_until=? WHERE id=? AND owner=? AND status='planned' AND expires_at>?").bind(token,this.clock.now()+readRetryPolicy.operationTimeoutMs+30000,id,this.owner,this.clock.now())
   ]);}catch{throw new SafeError('Another consumption is running or unresolved. Read its status before any new execution.');}
   if(results[1].meta.changes!==1){await this.unlock(id);throw new SafeError('The plan is expired, canceled, or already submitted. Inspect its status.');}
   return token;

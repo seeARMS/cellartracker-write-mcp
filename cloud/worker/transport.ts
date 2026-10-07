@@ -68,6 +68,7 @@ export class CloudCookieTransport implements Transport {
    if(Date.parse(this.env.CELLARTRACKER_SESSION_EXPIRES_AT??'')<=this.clock.now())throw new SafeError('The approved session cutoff passed. No further upstream request is permitted.');
    remaining=deadline-this.clock.now();
    if(remaining<=0)throw retryFailure('CELLARTRACKER_READ_DEADLINE',undefined,attempt-1,this.clock.now()+60000,this.clock.now());
+    if(request.kind==='consume'&&request.expiresAt!==undefined&&request.expiresAt<=this.clock.now())throw new SafeError('[CELLARTRACKER_PLAN_EXPIRED] The plan expired while waiting for its provider slot. No POST was sent. Inspect the saved operation; do not resubmit it.');
     const result=await this.attempt(request,Math.min(readRetryPolicy.attemptTimeoutMs,remaining));
     if(read&&this.clock.now()>deadline)throw retryFailure('CELLARTRACKER_READ_DEADLINE',undefined,attempt,this.clock.now()+60000,this.clock.now());
     if(read)this.successfulReads++;
@@ -82,7 +83,7 @@ export class CloudCookieTransport implements Transport {
     const delay=backoffMs(attempt,transient?error.delayMs:undefined,this.clock.random());
     // A 429 opens the durable circuit. Resume on a later invocation, never before Retry-After.
     const exhausted=status===429||!read||attempt>=readRetryPolicy.maxAttempts||this.clock.now()+delay+1>=deadline;
-    const wait=exhausted?Math.max(60000,delay):delay;
+    const wait=exhausted?Math.max(status===429?15*60000:60000,delay):delay;
     let retryAt=this.clock.now()+wait;
     let source=cooldownSource(attempt,transient?error.delayMs:undefined,exhausted);
     let streak:number|undefined;
@@ -133,7 +134,7 @@ export class CloudCookieTransport implements Transport {
   }
   if(response.redirected||(response.url&&response.url!==url))throw new SafeError('[CELLARTRACKER_ENDPOINT_CHANGED] The response did not remain on the exact approved endpoint. It was rejected.');
   if(response.headers.get('cf-mitigated')==='challenge'){
-   if(response.status===429){const delay=retryAfterMs(response.headers.get('retry-after'),this.clock.now());await this.gate?.record(this.clock.now()+Math.max(60000,backoffMs(1,delay,this.clock.random())),cooldownSource(1,delay,true));}
+   if(response.status===429){const delay=retryAfterMs(response.headers.get('retry-after'),this.clock.now());if(this.gate?.rateLimited)await this.gate.rateLimited(delay);else await this.gate?.record(this.clock.now()+Math.max(15*60000,delay??0),'fallback');}
    await this.gate?.block?.('CELLARTRACKER_BROWSER_CHALLENGE');
    throw new SafeError('[CELLARTRACKER_BROWSER_CHALLENGE] The upstream service requires a browser challenge for this cloud request. No challenge bypass or automatic retry is attempted.');
   }

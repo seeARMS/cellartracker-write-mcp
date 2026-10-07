@@ -16,20 +16,21 @@ test('every read request kind and consumption POST consult the same persisted pr
  await f.gate().record(initial+120000,'provider_retry_after');
  const kinds:BrowserRequest[]=[{kind:'inventory',page:1},{kind:'consumed',page:1},{kind:'consumptionDetails',wineId:'100',consumedId:'901'},{kind:'consumptionForm'},consume];
  for(const kind of kinds){const transport=await new CloudCookieTransport(f.env,(async()=>{calls++;return new Response('unexpected');})as typeof fetch,f.clock,f.gate()).init();
-  await assert.rejects(()=>transport.request(kind),e=>e instanceof RetryError&&e.metadata.attempts===0&&e.metadata.cooldown_source==='provider_retry_after'&&e.metadata.automatic_retry_allowed===true);
+  await assert.rejects(()=>transport.request(kind),e=>e instanceof RetryError&&e.metadata.attempts===0&&e.metadata.cooldown_source==='provider_retry_after'&&e.metadata.automatic_retry_allowed===false);
  }
  assert.equal(calls,0);assert.deepEqual(f.sleeps,[]);
  f.advance(120001);const transport=await new CloudCookieTransport(f.env,(async()=>{calls++;return new Response('ok');})as typeof fetch,f.clock,f.gate()).init();assert.equal((await transport.request({kind:'inventory',page:1})).text,'ok');assert.equal(calls,1);
 });
-test('verification 429 persists a provider cooldown used by cached discovery, fresh planning and reconciliation',async t=>{
+test('verification 429 persists a provider cooldown permits cached discovery but blocks fresh planning and reconciliation',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());const env=configured(db),api=upstream();
  const cached=await callTool(request(),env,'list_bottles',{},api.fetcher)as any;
  const plan=await callTool(request(),env,'plan_consumption',{request_id:crypto.randomUUID(),bottle_ids:['1'],date:'2026-09-30'},api.fetcher)as any;
- let calls=0;const limited=(async()=>{calls++;return new Response(marker,{status:429,headers:{'retry-after':'120','set-cookie':'private='+marker}});})as typeof fetch;
+ let calls=0;const limited=(async()=>{calls++;return new Response(marker,{status:429,headers:{'retry-after':'1800','set-cookie':'private='+marker}});})as typeof fetch;
  await assert.rejects(()=>callTool(request(),env,'verify_connection',{},limited),e=>e instanceof RetryError&&e.metadata.attempts===1&&e.metadata.cooldown_source==='provider_retry_after');assert.equal(calls,1);
- const args:Array<[string,Record<string,any>]>=[['verify_connection',{}],['list_bins',{}],['list_bottles',{snapshot_id:cached.snapshot.snapshot_id}],['plan_consumption',{request_id:crypto.randomUUID(),bottle_ids:['2'],date:'2026-09-30'}],['get_consumption_status',{operation_id:plan.operation_id}]];
+ const args:Array<[string,Record<string,any>]>=[['verify_connection',{}],['plan_consumption',{request_id:crypto.randomUUID(),bottle_ids:['2'],date:'2026-09-30'}],['get_consumption_status',{operation_id:plan.operation_id}]];
  for(const [name,toolArgs]of args)await assert.rejects(()=>callTool(request(),env,name,toolArgs,limited),e=>e instanceof RetryError&&e.metadata.attempts===0);
  assert.equal(calls,1);
+ for(const [name,toolArgs]of [['list_bins',{}],['list_bottles',{snapshot_id:cached.snapshot.snapshot_id}]]as const){const result=await callTool(request(),env,name,toolArgs,limited)as any;assert.equal(result.snapshot.cached,true);}assert.equal(calls,1);
  const outcome=await callTool(request(),env,'execute_consumption',{operation_id:plan.operation_id,confirmed:true},limited)as any;
  assert.equal(outcome.status,'planned');assert.equal(outcome.dry_run,true);assert.equal(outcome.verification.retry.cooldown_source,'provider_retry_after');assert.equal(outcome.verification.retry.submission_retry_allowed,false);assert.equal(calls,1);
  // Execution invalidates the snapshot but must not clear the provider cooldown.
@@ -39,13 +40,13 @@ test('verification 429 persists a provider cooldown used by cached discovery, fr
 test('429 from every endpoint persists a gate, including a single rejected POST',async t=>{
  const kinds:BrowserRequest[]=[{kind:'inventory',page:1},{kind:'consumed',page:1},{kind:'consumptionDetails',wineId:'100',consumedId:'901'},{kind:'consumptionForm'},consume];
  for(const kind of kinds){const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);let calls=0;
-  const transport=await new CloudCookieTransport(f.env,(async()=>{calls++;return new Response(marker,{status:429,headers:{'retry-after':'120'}});})as typeof fetch,f.clock,f.gate()).init();
+  const transport=await new CloudCookieTransport(f.env,(async()=>{calls++;return new Response(marker,{status:429,headers:{'retry-after':'1800'}});})as typeof fetch,f.clock,f.gate()).init();
   await assert.rejects(()=>transport.request(kind));assert.equal(calls,1);assert.deepEqual(f.sleeps,[]);
   await assert.rejects(()=>f.gate().assertAvailable(),e=>e instanceof RetryError&&e.metadata.cooldown_source==='provider_retry_after');
  }
 });
 test('fallback versus provider source describes the effective cooldown without storing raw headers',async t=>{
- for(const [header,source,attempts]of [[undefined,'fallback',1],['invalid '+marker,'fallback',1],['2','fallback',1],['120','provider_retry_after',1],[new Date(initial+120000).toUTCString(),'provider_retry_after',1]]as const){
+ for(const [header,source,attempts]of [[undefined,'fallback',1],['invalid '+marker,'fallback',1],['2','fallback',1],['1800','provider_retry_after',1],[new Date(initial+1800000).toUTCString(),'provider_retry_after',1]]as const){
   const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);let calls=0;
   const transport=await new CloudCookieTransport(f.env,(async()=>{calls++;return new Response(marker,{status:429,headers:header?{'retry-after':header}:undefined});})as typeof fetch,f.clock,f.gate()).init();
   await assert.rejects(()=>transport.request({kind:'inventory',page:1}),e=>{assert.ok(e instanceof RetryError);assert.equal(e.metadata.cooldown_source,source);assert.equal(e.metadata.attempts,attempts);assert.ok(!JSON.stringify(e.metadata).includes(marker));return true;});assert.equal(calls,attempts);
@@ -53,13 +54,13 @@ test('fallback versus provider source describes the effective cooldown without s
   await new InventorySnapshots(db,'owner','123',initial+3600000,f.clock).invalidate();await assert.rejects(()=>f.gate().assertAvailable(),RetryError);
  }
 });
-test('the first 429 stops and records a gate; automatic read continuation succeeds only after the full shared cooldown',async t=>{
+test('the first 429 stops and records a gate; deliberate read continuation succeeds only after the full shared cooldown',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);let calls=0;
  const fetcher=(async()=>new Response(++calls===1?marker:'ok',{status:calls===1?429:200,headers:{'retry-after':'2'}}))as typeof fetch;
  const transport=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();
  await assert.rejects(()=>transport.request({kind:'inventory',page:1}),e=>e instanceof RetryError&&e.metadata.attempts===1&&e.metadata.error_origin==='upstream_http');assert.equal(calls,1);assert.deepEqual(f.sleeps,[]);
  await assert.rejects(()=>f.gate().assertAvailable(),e=>e instanceof RetryError&&e.metadata.error_origin==='saved_provider_cooldown'&&e.metadata.upstream_status===undefined);
- f.advance(60501);const deliberate=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();assert.equal((await deliberate.request({kind:'inventory',page:1})).text,'ok');assert.equal(calls,2);
+ f.advance(900501);const deliberate=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();assert.equal((await deliberate.request({kind:'inventory',page:1})).text,'ok');assert.equal(calls,2);
 });
 test('atomic upsert preserves the longest cooldown across concurrent Workers and snapshot deletion',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);
@@ -68,10 +69,10 @@ test('atomic upsert preserves the longest cooldown across concurrent Workers and
  const row=await db.prepare('SELECT retry_at,source FROM provider_cooldowns').first()as any;assert.equal(row.retry_at,initial+120000);assert.equal(row.source,'provider_retry_after');
  await new InventorySnapshots(db,'owner','123',initial+3600000,f.clock).invalidate();await assert.rejects(()=>f.gate().assertAvailable(),e=>e instanceof RetryError&&e.metadata.retry_after_seconds===120);
 });
-test('provider gates are owner/account bound and cannot be bypassed by binding after setup verification',async t=>{
+test('provider gates cover all accounts for an owner and cannot be bypassed by rebinding',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);await new ProviderCooldown(db,'owner','unbound',f.clock).record(initial+120000,'fallback');
  await assert.rejects(()=>f.gate().assertAvailable(),RetryError);await new ProviderCooldown(db,'other-owner','123',f.clock).assertAvailable();
- f.advance(120001);await f.gate().record(f.clock.now()+60000,'fallback');await new ProviderCooldown(db,'owner','999',f.clock).assertAvailable();
+ f.advance(120001);await f.gate().record(f.clock.now()+60000,'fallback');await assert.rejects(()=>new ProviderCooldown(db,'owner','999',f.clock).assertAvailable(),RetryError);
 });
 test('missing or failed provider gate storage prevents network access',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());const env=configured(db);let calls=0;const fetcher=(async()=>{calls++;return new Response('unexpected');})as typeof fetch;
@@ -88,7 +89,7 @@ test('waiting pagination callers receive the shared provider cooldown source rat
 });
 test('a 429 browser challenge is never retried or bypassed but still establishes the provider gate',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);let calls=0;
- const transport=await new CloudCookieTransport(f.env,(async()=>{calls++;return new Response(marker,{status:429,headers:{'cf-mitigated':'challenge','retry-after':'120'}});})as typeof fetch,f.clock,f.gate()).init();
+ const transport=await new CloudCookieTransport(f.env,(async()=>{calls++;return new Response(marker,{status:429,headers:{'cf-mitigated':'challenge','retry-after':'1800'}});})as typeof fetch,f.clock,f.gate()).init();
  await assert.rejects(()=>transport.request({kind:'inventory',page:1}),/CELLARTRACKER_BROWSER_CHALLENGE/);assert.equal(calls,1);assert.deepEqual(f.sleeps,[]);
  await assert.rejects(()=>f.gate().assertAvailable(),/CELLARTRACKER_BROWSER_CHALLENGE/);
  const row=await db.prepare('SELECT retry_at FROM provider_cooldowns').first()as any;assert.ok(row.retry_at>=initial+120000);

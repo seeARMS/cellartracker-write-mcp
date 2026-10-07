@@ -12,7 +12,7 @@ import {SqliteD1,FakeCellar,bottle,upstream} from './helpers.js';
 function fixture(t:any){
  const db=new SqliteD1();t.after(()=>db.close());let now=Date.now();
  const clock={now:()=>now,sleep:async(ms:number)=>{now+=ms;},random:()=>0};
- const env={DB:db,CELLARTRACKER_OWNER_USER_ID:'owner',CELLARTRACKER_EXPECTED_ACCOUNT_ID:'123',CELLARTRACKER_READS_ENABLED:'true',CELLARTRACKER_WRITES_ENABLED:'true',CELLARTRACKER_SESSION_EXPIRES_AT:new Date(now+86400000).toISOString(),CELLARTRACKER_SESSION_JSON:JSON.stringify({cookie:'fixture=synthetic',userAgent:'Synthetic'})};
+ const env={DB:db,CELLARTRACKER_OWNER_USER_ID:'owner',CELLARTRACKER_EXPECTED_ACCOUNT_ID:'123',CELLARTRACKER_READS_ENABLED:'true',CELLARTRACKER_WRITES_ENABLED:'true',CELLARTRACKER_SESSION_EXPIRES_AT:new Date(now+7*86400000).toISOString(),CELLARTRACKER_SESSION_JSON:JSON.stringify({cookie:'fixture=synthetic',userAgent:'Synthetic'})};
  const gate=()=>new ProviderCooldown(db,'owner','123',clock);
  const store=()=>new CloudStore(db,'owner',clock);
  const cellar=new FakeCellar();
@@ -21,16 +21,16 @@ function fixture(t:any){
 const req=()=>({request_id:crypto.randomUUID(),bottle_ids:['1'],date:'2026-10-02',note:''});
 const ownerRequest=(owner='owner')=>new Request('https://fixture.invalid/mcp',{method:'POST',headers:{'oai-authenticated-user-id':owner}});
 const limited=(now:number)=>retryFailure('CELLARTRACKER_RATE_LIMITED',429,1,now+60000,now,'fallback',{error_origin:'upstream_http'});
-test('429 circuit persists increasing waits across new transports and resets only after six quiet hours',async t=>{
+test('429 circuit persists increasing waits across new transports and resets only after 24 quiet hours',async t=>{
  const f=fixture(t);let calls=0;
  const fetcher=(async()=>{calls++;return new Response('SYNTHETIC_PRIVATE_BODY',{status:429});})as typeof fetch;
  for(let i=0;i<8;i++){
   const before=f.clock.now();const transport=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();
-  let retryAt=0;await assert.rejects(()=>transport.request({kind:'inventory',page:1}),e=>{assert.ok(e instanceof RetryError);assert.equal(e.metadata.rate_limit_streak,i+1);assert.equal(e.metadata.automatic_retry_allowed,true);assert.equal(e.metadata.response_classification,'http_rate_limit');retryAt=Date.parse(e.metadata.retry_at);assert.equal(retryAt-before,Math.min(3600000,60000*2**i));return true;});
+  let retryAt=0;await assert.rejects(()=>transport.request({kind:'inventory',page:1}),e=>{assert.ok(e instanceof RetryError);assert.equal(e.metadata.rate_limit_streak,i+1);assert.equal(e.metadata.automatic_retry_allowed,false);assert.equal(e.metadata.response_classification,'http_rate_limit');retryAt=Date.parse(e.metadata.retry_at);assert.equal(retryAt-before,Math.min(6*3600000,900000*2**i));return true;});
   const restarted=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();await assert.rejects(()=>restarted.request({kind:'consumed',page:1}),RetryError);assert.equal(calls,i+1);
   f.advance(retryAt-f.clock.now());
  }
- f.advance(6*3600000+1);assert.equal((await f.gate().rateLimited(undefined)).streak,1);
+ f.advance(24*3600000+1);assert.equal((await f.gate().rateLimited(undefined)).streak,1);
 });
 test('provider HTTP-date wait survives restart and cannot be shortened by fallback backoff',async t=>{
  const f=fixture(t);const cutoff=f.clock.now()+2*86400000;
@@ -103,7 +103,7 @@ test('retryable execution preflight and form reads preserve the reviewed plan wi
 test('expired checking lease fences a stale worker before a restarted worker can submit',async t=>{
  const f=fixture(t),plan=await f.service().plan(req());let resume!:()=>void,entered!:()=>void;const started=new Promise<void>(r=>entered=r),pause=new Promise<void>(r=>resume=r);let once=true;
  f.cellar.pauseInventory=async()=>{if(once){once=false;entered();await pause;}};const stale=f.service().execute(plan.operation_id);await started;
- f.advance(120001);const restarted=await f.service().execute(plan.operation_id);assert.equal(restarted.status,'complete');resume();await stale;assert.equal(f.cellar.writes,1);assert.equal((await f.store().get(plan.operation_id)).status,'complete');
+ f.advance(630001);const restarted=await f.service().execute(plan.operation_id);assert.equal(restarted.status,'complete');resume();await stale;assert.equal(f.cellar.writes,1);assert.equal((await f.store().get(plan.operation_id)).status,'complete');
 });
 test('legacy checking locks without a known lease and every ambiguous POST remain non-replayable',async t=>{
  const f=fixture(t),p=await f.service().plan(req());await f.store().begin(p.operation_id);f.db.sqlite.prepare('UPDATE operations SET checking_until=NULL,checking_token=NULL WHERE id=?').run(p.operation_id);f.advance(150000);
@@ -119,7 +119,7 @@ test('partial POST remains unknown and locked after restart; status never submit
 test('lost POST plus rate-limited reconciliation completes by read-back without replay',async t=>{
  const f=fixture(t),p=await f.service().plan(req());const inventory=f.cellar.inventory.bind(f.cellar);f.cellar.loseResponse=true;
  f.cellar.inventory=async()=>{if(f.cellar.writes)throw limited(f.clock.now());return inventory();};
- const result=await f.service().execute(p.operation_id);assert.equal(result.status,'unknown');assert.equal(result.verification?.retry?.automatic_retry_allowed,true);assert.equal(result.verification?.retry?.submission_retry_allowed,false);
+ const result=await f.service().execute(p.operation_id);assert.equal(result.status,'unknown');assert.equal(result.verification?.retry?.automatic_retry_allowed,false);assert.equal(result.verification?.retry?.submission_retry_allowed,false);
  f.advance(60001);f.cellar.inventory=inventory;assert.equal((await f.service().status(p.operation_id)).status,'complete');assert.equal((await f.service().execute(p.operation_id)).status,'complete');assert.equal(f.cellar.writes,1);
 });
 test('the real tool path queues, binds exact IDs, prepares form before the durable POST boundary and verifies',async t=>{
@@ -132,11 +132,11 @@ test('the real tool path queues, binds exact IDs, prepares form before the durab
 });
 test('exhausted 5xx cooldown is classified separately from an HTTP 429',async t=>{
  const f=fixture(t);let calls=0;const transport=await new CloudCookieTransport(f.env,(async()=>{calls++;return new Response('',{status:503});})as typeof fetch,f.clock,f.gate()).init();
- await assert.rejects(()=>transport.request({kind:'consumed',page:1}),e=>e instanceof RetryError&&e.metadata.response_classification==='service_error'&&e.metadata.attempts===3);
- await assert.rejects(()=>f.gate().assertAvailable(),e=>e instanceof RetryError&&e.metadata.error_code==='CELLARTRACKER_READ_COOLDOWN'&&e.metadata.upstream_status===undefined);assert.equal(calls,3);
+ await assert.rejects(()=>transport.request({kind:'consumed',page:1}),e=>e instanceof RetryError&&e.metadata.response_classification==='service_error'&&e.metadata.attempts===1);
+ await assert.rejects(()=>f.gate().assertAvailable(),e=>e instanceof RetryError&&e.metadata.error_code==='CELLARTRACKER_READ_COOLDOWN'&&e.metadata.upstream_status===undefined);assert.equal(calls,1);
 });
 test('connection diagnostics report only saved fixed metadata and never contact the provider',async t=>{
- const f=fixture(t);await f.gate().rateLimited(300000);let calls=0;
+ const f=fixture(t);await f.gate().rateLimited(1800000);let calls=0;
  const result=await callTool(ownerRequest(),f.env,'connection_status',{},(async()=>{calls++;throw Error('unexpected');})as typeof fetch,f.clock)as any;
  assert.equal(result.adapter_version,'0.2.0');assert.equal(result.provider.rate_limit_streak,1);assert.equal(result.provider.cooldown_source,'provider_retry_after');assert.equal(calls,0);assert.ok(!JSON.stringify(result).includes('fixture='));
 });

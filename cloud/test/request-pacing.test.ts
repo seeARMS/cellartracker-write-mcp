@@ -14,11 +14,11 @@ test('separate Worker instances atomically pace request starts across inventory,
  for(const kind of [{kind:'inventory',page:1},{kind:'consumed',page:1},{kind:'consumptionForm'},{kind:'consume',ids:['1'],currency:'USD',details:{date:'2026-09-30',type:1,note:''}}]as const){
   const transport=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();await transport.request(kind as any);
  }
- assert.deepEqual(starts,[initial,initial+2000,initial+4000,initial+6000]);assert.deepEqual(f.waits,[2000,2000,2000]);
+ assert.deepEqual(starts,[initial,initial+10000,initial+20000,initial+30000]);assert.deepEqual(f.waits,[10000,10000,10000]);
 });
 test('concurrent slot reservations preserve minimum spacing without a read-then-write race',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db),starts:number[]=[];
- await Promise.all(Array.from({length:4},async()=>{await f.gate().pace(initial+30000);starts.push(f.clock.now());}));
+ await Promise.all(Array.from({length:4},async()=>{await f.gate().pace(initial+60000);starts.push(f.clock.now());}));
  const row=await db.prepare('SELECT next_at FROM provider_request_slots').first()as any;
  assert.ok(row.next_at>=initial+4*providerRequestSpacingMs);assert.equal(starts.length,4);
  // Each granted reservation updates the monotonic next slot atomically, even if callbacks interleave.
@@ -44,6 +44,20 @@ test('a later-page 429 reports fresh HTTP origin and cumulative counts without r
  const fetcher=(async(input:string)=>{const page=Number(new URL(input).searchParams.get('Page'));calls.push(page);return page===3?new Response(marker,{status:429}):new Response(inventoryHtml([bottle(String(page))],page,3,3));})as typeof fetch;
  const cellar=new CellarTracker(await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init());
  await assert.rejects(()=>cellar.inventory(),e=>{assert.ok(e instanceof RetryError);assert.equal(e.metadata.error_origin,'upstream_http');assert.equal(e.metadata.upstream_page,3);assert.equal(e.metadata.request_kind,'inventory');assert.equal(e.metadata.attempts,1);assert.equal(e.metadata.total_upstream_attempts,3);assert.equal(e.metadata.successful_upstream_reads,2);assert.ok(!JSON.stringify(e.metadata).includes(marker));return true;});
- assert.deepEqual(calls,[1,2,3]);assert.deepEqual(f.waits,[2000,2000]);
+ assert.deepEqual(calls,[1,2,3]);assert.deepEqual(f.waits,[10000,10000]);
  await assert.rejects(()=>f.gate().assertAvailable(),e=>e instanceof RetryError&&e.metadata.error_origin==='saved_provider_cooldown'&&e.metadata.upstream_status===undefined);
+});
+
+test('a 25-page inventory walk fits the longer paced workflow without partial cache data',async t=>{
+ const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);let calls=0;
+ const fetcher=(async(input:string)=>{calls++;const page=Number(new URL(input).searchParams.get('Page'));return new Response(inventoryHtml([bottle(String(page))],page,25,25));})as typeof fetch;
+ const cellar=new CellarTracker(await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init());
+ assert.equal((await cellar.inventory()).bottles.length,25);assert.equal(calls,25);
+ assert.equal(f.clock.now()-initial,240000);assert.ok(f.waits.every(ms=>ms===10000));
+});
+test('plan expiration while waiting for a POST slot prevents the actual provider submission',async t=>{
+ const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);await f.gate().pace(initial+45000);let calls=0;
+ const transport=await new CloudCookieTransport(f.env,(async()=>{calls++;return new Response('unexpected');})as typeof fetch,f.clock,f.gate()).init();
+ await assert.rejects(()=>transport.request({kind:'consume',ids:['1'],currency:'USD',details:{date:'2026-09-30',type:1,note:''},expiresAt:initial+5000}),/CELLARTRACKER_PLAN_EXPIRED/);
+ assert.equal(calls,0);
 });

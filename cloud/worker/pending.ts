@@ -1,15 +1,15 @@
 import {SafeError,RetryError,type D1Database} from './types.js';
-import {realClock,retryFailure,type RetryClock} from './backoff.js';
+import {realClock,retryFailure,readRetryPolicy,type RetryClock} from './backoff.js';
 import type {PlanInput} from './consumption.js';
 import {validateConsumption} from './validation.js';
-export const pendingPolicy={leaseMs:120000,maxAttempts:12,maxAgeMs:86400000};
+export const pendingPolicy={leaseMs:readRetryPolicy.operationTimeoutMs+30000,maxAttempts:12,maxAgeMs:86400000};
 export interface ConsumptionIntent {request_id:string;wine:string;quantity:number;date:string;note?:string}
 interface Row {owner:string;request_key:string;operation_id:string;fingerprint:string;body:string;created_at:number;retry_at:number;attempts:number;lease_id:string|null;lease_until:number;error:string|null}
 export async function fingerprint(value:unknown){return [...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value))))].map(b=>b.toString(16).padStart(2,'0')).join('');}
 export class PendingRequests {
  constructor(private db:D1Database,private owner:string,private clock:RetryClock=realClock){}
  private row(id:string){return this.db.prepare('SELECT * FROM pending_requests WHERE owner=? AND request_key=?').bind(this.owner,id).first<Row>();}
- async get(id:string){const row=await this.row(id);if(!row)throw new SafeError('Pending consumption request not found for this owner.');return {request_id:id,operation_id:row.operation_id,pending:JSON.parse(row.body),attempts:row.attempts,created_at:new Date(row.created_at).toISOString(),retry_at:new Date(row.retry_at).toISOString(),last_error:row.error?JSON.parse(row.error):null,automatic_retry_allowed:row.attempts<pendingPolicy.maxAttempts&&this.clock.now()<row.created_at+pendingPolicy.maxAgeMs&&!(row.error&&JSON.parse(row.error).terminal),background_worker_scheduled:false};}
+ async get(id:string){const row=await this.row(id);if(!row)throw new SafeError('Pending consumption request not found for this owner.');return {request_id:id,operation_id:row.operation_id,pending:JSON.parse(row.body),attempts:row.attempts,created_at:new Date(row.created_at).toISOString(),retry_at:new Date(row.retry_at).toISOString(),last_error:row.error?JSON.parse(row.error):null,automatic_retry_allowed:false,background_worker_scheduled:false};}
  async saveIntent(input:ConsumptionIntent){
   if(!input.wine.trim())throw new SafeError('A wine description is required to save the request.');
   validateConsumption({date:input.date,type:1,note:input.note??''});

@@ -29,7 +29,7 @@ function identity(request:Request,env:Environment,requireOwner=true){
  if(requireOwner&&(!env.CELLARTRACKER_OWNER_USER_ID||user!==env.CELLARTRACKER_OWNER_USER_ID))throw new AccessError('Cloud owner binding is missing or does not match this signed-in user.',403);
  return user;
 }
-function setupStatus(env:Environment){return {reads_enabled:env.CELLARTRACKER_READS_ENABLED==='true',writes_enabled:env.CELLARTRACKER_WRITES_ENABLED==='true',owner_bound:!!env.CELLARTRACKER_OWNER_USER_ID,account_bound:/^\d+$/.test(env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??''),session_configured:!!env.CELLARTRACKER_SESSION_JSON,approved_session_expiry_valid:Number.isFinite(Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT??''))&&Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!)>Date.now(),storage_ready:!!env.DB,transport:'direct-https',adapter_version:'0.2.0',retry_policy:'durable-cooldown-v2',authenticated_inventory_verified:false};}
+function setupStatus(env:Environment){return {reads_enabled:env.CELLARTRACKER_READS_ENABLED==='true',writes_enabled:env.CELLARTRACKER_WRITES_ENABLED==='true',owner_bound:!!env.CELLARTRACKER_OWNER_USER_ID,account_bound:/^\d+$/.test(env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??''),session_configured:!!env.CELLARTRACKER_SESSION_JSON,approved_session_expiry_valid:Number.isFinite(Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT??''))&&Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!)>Date.now(),storage_ready:!!env.DB,transport:'direct-https',adapter_version:'0.2.0',retry_policy:'conservative-manual-v3',authenticated_inventory_verified:false};}
 export async function callTool(request:Request,env:Environment,name:string,args:Record<string,any>,fetcher:typeof fetch=fetch,clock:RetryClock=realClock){
  const tool=tools.find(t=>t.name===name);if(!tool)throw new SafeError('Unknown CellarTracker tool.');validate(tool.inputSchema,args);
  if(name==='connection_status'){
@@ -66,7 +66,7 @@ export async function callTool(request:Request,env:Environment,name:string,args:
  if(!gate)throw new SafeError('Cloud provider cooldown storage is unavailable. No upstream request is permitted.');
  const snapshots=env.DB&&account?new InventorySnapshots(env.DB,owner,account,Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!),clock,gate):undefined;
  if(['verify_connection','list_bins','list_bottles'].includes(name)){
-  await gate.assertAvailable();
+  if(name==='verify_connection')await gate.assertAvailable();
   if(name!=='verify_connection'&&!snapshots)throw new SafeError('Inventory snapshot storage is unavailable. No upstream discovery refresh was started.');
   const snapshot=name==='verify_connection'?undefined:await snapshots!.get(()=>cellar.inventory(),args.snapshot_id);
   const inventory=snapshot?.inventory??await cellar.inventory();

@@ -57,7 +57,7 @@ export class CloudConsumption {
     return summarize(await this.store.get(id));
    }
    submissionBoundary=true;
-   try{await this.cellar.consume(op.bottles.map(b=>b.id),op.details,currency);}catch(error){/* A lost response is not a failed write. Never replay. */
+   try{await this.cellar.consume(op.bottles.map(b=>b.id),op.details,currency,op.expiresAt);}catch(error){/* A lost response is not a failed write. Never replay. */
     const code=error instanceof SafeError?error.message.match(/^\[(CELLARTRACKER_[A-Z_]+)\]/)?.[1]:undefined;
     submissionError={error_code:code??'CELLARTRACKER_SUBMISSION_UNVERIFIED'};
    }

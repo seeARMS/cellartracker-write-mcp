@@ -22,7 +22,8 @@ test('all pagination calls reuse one complete inventory walk, with or without th
 test('independent Worker instances coalesce concurrent cold refreshes through a D1 lease',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());let loads=0;
  const load=async()=>{loads++;await new Promise(resolve=>setTimeout(resolve,10));return {accountId:'123',bottles:[bottle('1')]};};
- const snapshots=await Promise.all(Array.from({length:4},()=>new InventorySnapshots(db,'owner','123',Date.now()+3600000).get(load)));
+ const expiry=Date.now()+3600000;
+ const snapshots=await Promise.all(Array.from({length:4},()=>new InventorySnapshots(db,'owner','123',expiry).get(load)));
  assert.equal(loads,1);assert.equal(new Set(snapshots.map(s=>s.metadata.snapshot_id)).size,1);assert.equal(snapshots.filter(s=>!s.metadata.cached).length,1);
 });
 test('expired pinned snapshots never silently load a different generation',async t=>{
@@ -73,6 +74,28 @@ test('retry diagnostics are returned as structured MCP metadata without upstream
  await assert.rejects(()=>cache.get(async()=>{throw retryFailure('CELLARTRACKER_RATE_LIMITED',429,3,now+60000,now);}));
  const req=new Request('https://synthetic.invalid/mcp',{method:'POST',headers:{'oai-authenticated-user-id':'owner'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'list_bottles',arguments:{}}})});
  const reply=await(await worker.fetch(req,env)).json()as any;
- assert.equal(reply.result.isError,true);assert.equal(reply.result.structuredContent.error_code,'CELLARTRACKER_RATE_LIMITED');assert.equal(reply.result.structuredContent.automatic_retry_allowed,true);
+ assert.equal(reply.result.isError,true);assert.equal(reply.result.structuredContent.error_code,'CELLARTRACKER_RATE_LIMITED');assert.equal(reply.result.structuredContent.automatic_retry_allowed,false);
  assert.ok(!JSON.stringify(reply).includes('synthetic-only'));
+});
+
+test('45-minute discovery snapshot survives Worker restart and cooldown, with age disclosure and no provider call',async t=>{
+ const db=new SqliteD1();t.after(()=>db.close());let now=Date.now(),calls=0;
+ const clock={now:()=>now,sleep:async(ms:number)=>{now+=ms;},random:()=>0};
+ const env=configured(db),fetcher=(async()=>{calls++;return new Response(inventoryHtml([bottle('1')]));})as typeof fetch;
+ const {callTool:run}=await import('../worker/index.js');const {ProviderCooldown}=await import('../worker/provider-gate.js');
+ const first=await run(request(),env,'list_bottles',{},fetcher,clock)as any;
+ now+=30*60000;await new ProviderCooldown(db,'owner','123',clock).rateLimited(undefined);
+ const cached=await run(request(),env,'list_bottles',{snapshot_id:first.snapshot.snapshot_id},fetcher,clock)as any;
+ assert.equal(calls,1);assert.equal(cached.snapshot.cached,true);assert.equal(cached.snapshot.age_seconds,1800);
+ assert.equal(cached.snapshot.potentially_stale,true);assert.equal(cached.snapshot.read_only,true);assert.equal(cached.snapshot.as_of,first.snapshot.as_of);
+ await assert.rejects(()=>run(request(),env,'verify_connection',{},fetcher,clock),RetryError);assert.equal(calls,1);
+ await new ProviderCooldown(db,'owner','123',clock).block('CELLARTRACKER_ACCESS_DENIED');
+ await assert.rejects(()=>run(request(),env,'list_bottles',{},fetcher,clock),/ACCESS_DENIED/);assert.equal(calls,1);
+});
+test('slow complete refresh outlasts the old lease and dates freshness from its first page',async t=>{
+ const db=new SqliteD1();t.after(()=>db.close());let now=Date.now();const start=now;
+ const clock={now:()=>now,sleep:async(ms:number)=>{now+=ms;},random:()=>0};
+ const snapshot=await new InventorySnapshots(db,'owner','123',now+3600000,clock).get(async()=>{now+=240000;return {accountId:'123',bottles:[bottle('1')]};});
+ assert.equal(snapshot.metadata.as_of,new Date(start).toISOString());assert.equal(snapshot.metadata.age_seconds,240);
+ assert.equal(Date.parse(snapshot.metadata.expires_at),start+45*60000);
 });

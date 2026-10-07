@@ -81,10 +81,10 @@ export class CellarTracker implements ConsumptionCellar {
     const currency=String(f.find('[name="RevenueCurrency"]').val());if(!/^[A-Z]{3}$/.test(currency))throw new SafeError('Cannot read the consumption form currency.');
     return currency;
   }
-  async consume(ids:string[],details:ConsumptionDetails,preparedCurrency?:string){
+  async consume(ids:string[],details:ConsumptionDetails,preparedCurrency?:string,expiresAt?:number){
     validateConsumption(details);
     const currency=preparedCurrency??await this.prepareConsumption(details);
-    const response=await this.transport.request({kind:'consume',ids,details,currency});this.checkResponse(response.status,response.url);
+    const response=await this.transport.request({kind:'consume',ids,details,currency,expiresAt});this.checkResponse(response.status,response.url);
     const xml=load(response.text,{xml:true});
     if(xml('error').text().trim()||/<!doctype html|<html[\s>]/i.test(response.text))throw new SafeError('Unexpected or rejected consumption response; reconcile with history.');
   }
