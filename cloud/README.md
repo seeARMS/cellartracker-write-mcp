@@ -48,6 +48,7 @@ Configure runtime values through native Site Settings, not source or tool argume
 | `CELLARTRACKER_OWNER_USER_ID` | Bind the signed-in owner's Site-scoped identity returned by `connection_status` |
 | `CELLARTRACKER_EXPECTED_ACCOUNT_ID` | Bind the intended numeric account after read-only verification and owner approval |
 | `CELLARTRACKER_SESSION_JSON` | Hosted secret; entered only by the owner through native secure settings |
+| `CELLARTRACKER_COOKIE` | Optional hosted **secret**: full raw Cookie request-header value. Overrides only the legacy cookie; reuses `userAgent` from `CELLARTRACKER_SESSION_JSON`. Leave absent for legacy behavior; blank/invalid values block requests without fallback. |
 | `CELLARTRACKER_SESSION_EXPIRES_AT` | Explicit approved UTC cutoff, in `YYYY-MM-DDTHH:mm:ss.sssZ` format |
 | `CELLARTRACKER_READS_ENABLED` | `true` only after read-access approval and secure setup |
 | `CELLARTRACKER_WRITES_ENABLED` | `true` only after separate consumption activation approval |
@@ -57,6 +58,8 @@ The session-secret schema is one JSON object with exactly named string fields:
 ```json
 {"cookie":"<Cookie request-header value>","userAgent":"<User-Agent request-header value>"}
 ```
+
+**Phone-friendly cookie replacement:** open https://chatgpt.com/sites in your browser, find the existing Site, then select **More actions → Settings**. Add a hosted secret named `CELLARTRACKER_COOKIE`, mark it as secret, and paste only the complete outgoing Cookie header value into its value field. Do not include `Cookie:`, JSON, quotation marks, or response Set-Cookie attributes. Keep the existing `CELLARTRACKER_SESSION_JSON` unchanged: its stored User-Agent is reused, while its cookie is superseded. Save it yourself, then ask ChatGPT to redeploy the approved saved version to apply the new environment revision. This changes no permissions, cutoff, cooldown, or write authorization. Remove the optional key only if you deliberately want to use the legacy cookie again. Native settings support arbitrary runtime keys; `.openai/hosting.json` has no secret declaration field. The variable table and commented `.env.example` declare the supported name without creating an empty live override or storing a credential.
 
 These are placeholders, not credentials. The owner must obtain the full authenticated Cookie and User-Agent header values from their own signed-in Individual Bottles request at the exact `https://www.cellartracker.com/list.asp` origin and enter them through native secure settings. `document.cookie` can omit HttpOnly cookies. Never send cookies, passwords, browser captures or HAR files through chat, issues, MCP arguments or custom forms. Do not copy an existing local session into this source tree.
 

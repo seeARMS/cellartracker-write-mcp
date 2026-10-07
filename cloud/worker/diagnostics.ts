@@ -4,12 +4,13 @@ const version='\\d{1,4}(?:\\.\\d{1,4}){0,3}';
 const platform='(?:Macintosh; Intel Mac OS X \\d{1,2}(?:_\\d{1,2}){0,2}|Windows NT \\d{1,2}\\.\\d{1,2}; Win64; x64|X11; Linux x86_64)';
 // Only a conventional desktop browser UA can be echoed; arbitrary comments/tokens are redacted.
 const browserUA=new RegExp(`^Mozilla/5\\.0 \\(${platform}\\) AppleWebKit/${version} \\(KHTML, like Gecko\\) (?:Chrome/${version} Safari/${version}(?: Edg/${version})?|Version/${version} Safari/${version})$`);
-export function sessionDiagnostics(raw:string|undefined){
- const unavailable={configured_user_agent:null,user_agent_class:'unavailable',cookie_names:[]as string[],other_cookie_names_redacted:0,session_source:'hosted_secret_snapshot',capture_time_known:false};
+export function sessionDiagnostics(raw:string|undefined,rawCookie?:string){
+ const unavailable={configured_user_agent:null,user_agent_class:'unavailable',cookie_names:[]as string[],other_cookie_names_redacted:0,session_source:'hosted_secret_snapshot',cookie_source:rawCookie===undefined?'legacy_session_json':'raw_cookie_secret',capture_time_known:false};
  let session:any;try{session=JSON.parse(raw??'');}catch{return unavailable;}
  if(!session||typeof session!=='object'||Array.isArray(session))return unavailable;
  const ua=typeof session.userAgent==='string'&&session.userAgent.length<=512?session.userAgent:undefined;
- const pairs=typeof session.cookie==='string'&&session.cookie.length<=32768?session.cookie.split(/;\s*/).filter((s:string)=>s.includes('=')):[];
+ const cookie=rawCookie===undefined?session.cookie:rawCookie;
+ const pairs=typeof cookie==='string'&&cookie.length<=32768?cookie.split(/;\s*/).filter((s:string)=>s.includes('=')):[];
  const names=[...new Set<string>(pairs.map((s:string)=>s.slice(0,s.indexOf('='))).filter((n:string)=>knownCookieNames.has(n)))].sort();
  const others=pairs.filter((s:string)=>{const n=s.slice(0,s.indexOf('='));return !knownCookieNames.has(n);}).length;
  return {...unavailable,configured_user_agent:ua&&browserUA.test(ua)?ua:null,user_agent_class:ua?(browserUA.test(ua)?'recognized_browser':'redacted_nonstandard'):'unavailable',cookie_names:names,other_cookie_names_redacted:Math.min(others,128)};

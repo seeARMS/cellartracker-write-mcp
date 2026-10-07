@@ -36,9 +36,12 @@ export class CloudCookieTransport implements Transport {
   try{session=JSON.parse(this.env.CELLARTRACKER_SESSION_JSON??'');}
   catch{throw new SafeError('[SESSION_INVALID_JSON] Enter valid JSON in the native session-secret settings, without code fences. Do not send credentials in chat.');}
   if(!session||typeof session!=='object'||Array.isArray(session))throw new SafeError('[SESSION_WRONG_ROOT_SHAPE] Enter one JSON object with cookie and userAgent fields; do not wrap the object in quotation marks.');
-  if(!Object.hasOwn(session,'cookie'))throw new SafeError('[SESSION_COOKIE_MISSING] Add the exact case-sensitive cookie field to the session JSON in native secret settings.');
+  const rawCookieConfigured=this.env.CELLARTRACKER_COOKIE!==undefined;
+  if(!rawCookieConfigured&&!Object.hasOwn(session,'cookie'))throw new SafeError('[SESSION_COOKIE_MISSING] Add the exact case-sensitive cookie field to the session JSON in native secret settings.');
   if(!Object.hasOwn(session,'userAgent'))throw new SafeError('[SESSION_USER_AGENT_MISSING] Add the exact case-sensitive userAgent field to the session JSON in native secret settings.');
-  const {cookie,userAgent}=session as {cookie:unknown;userAgent:unknown};
+  const {userAgent}=session as {userAgent:unknown};
+  const cookie:unknown=rawCookieConfigured?this.env.CELLARTRACKER_COOKIE:(session as {cookie:unknown}).cookie;
+  if(rawCookieConfigured&&(typeof cookie!=='string'||!cookie.trim()||cookie.length>32768||cookie.split(/;\s*/).some(piece=>! /^[!#$%&'*+.^_`|~0-9A-Za-z-]+=[^\r\n\0;]*$/.test(piece)||/^(?:Path|Domain|Expires|Max-Age|SameSite)=/i.test(piece))))throw new SafeError('[SESSION_RAW_COOKIE_INVALID] CELLARTRACKER_COOKIE must contain only the full single-line Cookie request-header value, without Cookie:, JSON, quotes or Set-Cookie attributes. Fix or remove it in native secret settings; no fallback to the older cookie is allowed.');
   if(typeof cookie!=='string'||cookie.length>32768)throw new SafeError('[SESSION_COOKIE_FORMAT] The cookie field must be the full Cookie request-header value as a supported JSON string, without the header name.');
   if(typeof userAgent!=='string'||userAgent.length>512)throw new SafeError('[SESSION_USER_AGENT_FORMAT] The userAgent field must be the User-Agent request-header value as a supported JSON string, without the header name.');
   if(!cookie.trim())throw new SafeError('[SESSION_COOKIE_BLANK] Fill the cookie field yourself in native secret settings. Do not send credentials in chat.');
