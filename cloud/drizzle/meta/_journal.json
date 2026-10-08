@@ -57,6 +57,13 @@
       "when": 1791431863295,
       "tag": "0007_curly_hulk",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1791434606251,
+      "tag": "0008_greedy_moondragon",
+      "breakpoints": true
     }
   ]
 }

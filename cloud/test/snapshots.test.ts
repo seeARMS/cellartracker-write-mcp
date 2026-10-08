@@ -16,8 +16,10 @@ test('all pagination calls reuse one complete inventory walk, with or without th
  assert.equal(calls,6);assert.equal(new Set([first,...pages].flatMap(p=>p.bottles.map((b:any)=>b.id))).size,505);
  assert.ok(pages.every(p=>p.snapshot.cached&&p.snapshot.snapshot_id===first.snapshot.snapshot_id));
  const bins=await callTool(request(),env,'list_bins',{},fetcher)as any;assert.equal(bins.total,505);assert.equal(calls,6);
- // Explicit verification bypasses discovery cache.
- await callTool(request(),env,'verify_connection',{},fetcher);assert.equal(calls,12);
+ // Account verification bypasses cache but reads just one fresh page.
+ const verification:any=await callTool(request(),env,'verify_connection',{},fetcher);assert.equal(calls,7);
+ assert.equal(verification.total_bottles,505);assert.equal(verification.inventory_complete,false);
+ assert.equal(verification.verified_scope,'account_and_first_inventory_page');
 });
 test('independent Worker instances coalesce concurrent cold refreshes through a D1 lease',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());let loads=0;

@@ -1,10 +1,11 @@
 import {sessionDiagnostics} from './diagnostics.js';
+import {ProviderErrorDetails} from './error-details.js';
 import {ReconciliationReads} from './reconciliation.js';
 import {CellarTracker} from './cellar.js';
 import {CloudCookieTransport} from './transport.js';
 import {CloudStore} from './store.js';
 import {summarize,CloudConsumption} from './consumption.js';
-import {SafeError,AccessError,RetryError,type Environment} from './types.js';
+import {SafeError,AccessError,RetryError,ProviderResponseError,type Environment} from './types.js';
 import {InventorySnapshots} from './snapshots.js';
 import {ProviderCooldown} from './provider-gate.js';
 import {realClock,type RetryClock} from './backoff.js';
@@ -46,6 +47,10 @@ export async function callTool(request:Request,env:Environment,name:string,args:
   if(!env.DB)throw new SafeError('Cloud provider storage is unavailable.');
   return new ProviderCooldown(env.DB,owner,account!,clock).shortenFallback(args.last_rate_limit_at,args.retry_at,args.reviewed_no_retry_after);
  }
+ if(name==='get_provider_error_details'){
+  if(!env.DB)throw new SafeError('Cloud diagnostic storage is unavailable.');
+  return new ProviderErrorDetails(env.DB,owner,account!,clock).get(args.error_id);
+ }
  if(['queue_consumption_request','get_consumption_request'].includes(name)){
   if(!env.DB)throw new SafeError('Cloud operation storage is unavailable.');
   const store=new CloudStore(env.DB,owner,clock);
@@ -68,7 +73,13 @@ export async function callTool(request:Request,env:Environment,name:string,args:
   const r=await env.DB.prepare('UPDATE provider_state SET blocked_code=NULL WHERE owner=? AND blocked_code=?').bind(owner,args.reviewed_error_code).run();
   return {review_acknowledged:r.meta.changes===1,cooldown_preserved:true,authenticated:false};
  }
- const transport=await new CloudCookieTransport(env,fetcher,clock,gate).init();
+ if(name==='get_consumption_status'&&env.DB){
+  const op=await new CloudStore(env.DB,owner,clock).get(args.operation_id);
+  if(op.accountId!==account)throw new SafeError('Operation differs from the approved account.');
+  if(op.status==='complete')return {...summarize(op),verification_source:'saved_complete_operation',current_inventory_checked:false,automatic_retry_allowed:false,submission_retry_allowed:false};
+ }
+ const errorDetails=env.DB?new ProviderErrorDetails(env.DB,owner,account??'unbound',clock):undefined;
+ const transport=await new CloudCookieTransport(env,fetcher,clock,gate,errorDetails).init();
  const cellar=new CellarTracker(transport);
  if(!gate)throw new SafeError('Cloud provider cooldown storage is unavailable. No upstream request is permitted.');
  const snapshots=env.DB&&account?new InventorySnapshots(env.DB,owner,account,Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!),clock,gate):undefined;
@@ -76,9 +87,13 @@ export async function callTool(request:Request,env:Environment,name:string,args:
   if(name==='verify_connection')await gate.assertAvailable();
   if(name!=='verify_connection'&&!snapshots)throw new SafeError('Inventory snapshot storage is unavailable. No upstream discovery refresh was started.');
   const snapshot=name==='verify_connection'?undefined:await snapshots!.get(()=>cellar.inventory(),args.snapshot_id);
-  const inventory=snapshot?.inventory??await cellar.inventory();
+  if(name==='verify_connection'){
+   const first=await cellar.verifyConnection();
+   if(account&&first.accountId!==account)throw new SafeError('CellarTracker account differs from the approved account binding.');
+   return {authenticated:true,account_id:first.accountId,total_bottles:first.total,verified_scope:'account_and_first_inventory_page',inventory_complete:first.pages===1,transport:'direct-https'};
+  }
+  const inventory=snapshot!.inventory;
   if(account&&inventory.accountId!==account)throw new SafeError('CellarTracker account differs from the approved account binding.');
-  if(name==='verify_connection')return {authenticated:true,account_id:inventory.accountId,total_bottles:inventory.bottles.length,transport:'direct-https'};
   if(name==='list_bins'){
    const groups=new Map<string,{location:string;bin:string;count:number}>();for(const b of inventory.bottles){const key=JSON.stringify([b.location,b.bin]);const group=groups.get(key)??{location:b.location,bin:b.bin,count:0};group.count++;groups.set(key,group);}
    return {total:inventory.bottles.length,bins:[...groups.values()],snapshot:snapshot!.metadata};
@@ -121,5 +136,5 @@ export default {async fetch(request:Request,env:Environment){
  if(rpc.method!=='tools/call')return json({jsonrpc:'2.0',id:rpc.id,error:{code:-32601,message:'Method not found'}});
  const name=rpc.params?.name;
  try{const result=await callTool(request,env,name,rpc.params?.arguments??{});return reply({content:[{type:'text',text:JSON.stringify(result)}]});}
- catch(e){if(e instanceof AccessError)return json({jsonrpc:'2.0',id:rpc.id,error:{code:-32001,message:e.message}},e.status);return reply({isError:true,...(e instanceof RetryError?{structuredContent:e.metadata}:{}),content:[{type:'text',text:e instanceof RetryError?JSON.stringify({message:e.message,...e.metadata}):e instanceof SafeError?e.message:'Operation could not complete. No automatic retries are allowed; inspect the saved consumption status if submission may have started.'}]});}
+ catch(e){if(e instanceof AccessError)return json({jsonrpc:'2.0',id:rpc.id,error:{code:-32001,message:e.message}},e.status);return reply({isError:true,...(e instanceof RetryError?{structuredContent:e.metadata}:{}),content:[{type:'text',text:e instanceof RetryError?JSON.stringify({message:e.message,...e.metadata}):e instanceof ProviderResponseError?JSON.stringify({message:e.message,upstream_status:e.upstreamStatus,error_details_id:e.errorDetailsId,automatic_retry_allowed:false,submission_retry_allowed:false}):e instanceof SafeError?e.message:'Operation could not complete. No automatic retries are allowed; inspect the saved consumption status if submission may have started.'}]});}
 }};

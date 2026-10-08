@@ -52,13 +52,13 @@ test('429 and 5xx diagnostics discard private bodies and raw headers, stop once,
   const clock={now:()=>now,sleep:async(ms:number)=>{now+=ms;},random:()=>0};
   const db=new SqliteD1();const gate=new ProviderCooldown(db,'owner','123',clock);
   try{
-   const fetcher=(async()=>{calls++;return {status,url:'',redirected:false,headers:new Headers({'content-type':'text/html; private='+marker,'x-amzn-waf-action':'challenge','set-cookie':'User='+marker,location:'https://synthetic.invalid/'+marker,'retry-after':'1800'}),body:{cancel:async()=>{cancelled++;},getReader(){bodyReads++;throw Error(marker);}}};})as typeof fetch;
+   const fetcher=(async()=>{calls++;return {status,url:'',redirected:false,headers:new Headers({'content-type':'text/html; private='+marker,'set-cookie':'User='+marker,location:'https://synthetic.invalid/'+marker,'retry-after':'1800'}),body:{cancel:async()=>{cancelled++;},getReader(){bodyReads++;throw Error(marker);}}};})as typeof fetch;
    const transport=await new CloudCookieTransport(env,fetcher,clock,gate).init();
    await assert.rejects(()=>transport.request({kind:'inventory',page:1}),failure=>{
     assert.ok(failure instanceof RetryError);
     assert.equal(failure.metadata.attempts,1);assert.equal(failure.metadata.automatic_retry_allowed,false);
     assert.ok(failure.metadata.retry_after_seconds>=1800);
-    assert.deepEqual(failure.metadata.response_metadata,{content_type:'html',challenge_signal:'aws_waf_challenge',cloudflare_header_present:false,retry_after_present:true,provider_retry_after_seconds:1800,set_cookie_present:true,location_present:true,body_retained:false});
+    assert.deepEqual(failure.metadata.response_metadata,{content_type:'html',challenge_signal:'none',cloudflare_header_present:false,retry_after_present:true,provider_retry_after_seconds:1800,set_cookie_present:true,location_present:true,body_retained:false});
     assert.ok(!JSON.stringify(failure).includes(marker));return true;
    });
    assert.equal(calls,1);assert.equal(bodyReads,0);assert.ok(cancelled>0);

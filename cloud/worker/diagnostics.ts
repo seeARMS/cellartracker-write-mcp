@@ -15,7 +15,7 @@ export function sessionDiagnostics(raw:string|undefined,rawCookie?:string){
  const others=pairs.filter((s:string)=>{const n=s.slice(0,s.indexOf('='));return !knownCookieNames.has(n);}).length;
  return {...unavailable,configured_user_agent:ua&&browserUA.test(ua)?ua:null,user_agent_class:ua?(browserUA.test(ua)?'recognized_browser':'redacted_nonstandard'):'unavailable',cookie_names:names,other_cookie_names_redacted:Math.min(others,128)};
 }
-export interface ResponseDiagnostics {content_type:'html'|'json'|'text'|'other'|'absent';challenge_signal:'cloudflare_challenge'|'aws_waf_challenge'|'aws_waf_captcha'|'none';cloudflare_header_present:boolean;retry_after_present:boolean;provider_retry_after_seconds?:number;set_cookie_present:boolean;location_present:boolean;body_retained:false}
+export interface ResponseDiagnostics {content_type:'html'|'json'|'text'|'other'|'absent';challenge_signal:'cloudflare_challenge'|'aws_waf_challenge'|'aws_waf_captcha'|'none';cloudflare_header_present:boolean;retry_after_present:boolean;provider_retry_after_seconds?:number;set_cookie_present:boolean;location_present:boolean;body_retained:boolean;error_details_id?:string;error_details_unavailable?:boolean}
 export function responseDiagnostics(headers:Headers,delayMs:number|undefined):ResponseDiagnostics{
  const content=headers.get('content-type');const mime=content&&content.length<=256?content.split(';',1)[0].trim().toLowerCase():undefined;
  const waf=headers.get('x-amzn-waf-action');

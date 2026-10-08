@@ -1,5 +1,6 @@
 import type {ResponseDiagnostics} from './diagnostics.js';
 export class SafeError extends Error {}
+export class ProviderResponseError extends SafeError {constructor(message:string,readonly upstreamStatus:number,readonly errorDetailsId?:string){super(message);}}
 export type CooldownSource='provider_retry_after'|'fallback';
 export interface ProviderGate {assertAvailable(cached?:boolean):Promise<void>;record(retryAt:number,source:CooldownSource,code?:string):Promise<void>;pace?(deadline:number):Promise<void>;acquire?(deadline:number):Promise<string>;release?(lease:string):Promise<void>;rateLimited?(providerDelay:number|undefined,retryAfterPresent?:boolean):Promise<{retryAt:number;source:CooldownSource;streak:number}>;block?(code:string):Promise<void>}
 export interface RetryDiagnostics {error_origin:'upstream_http'|'saved_provider_cooldown'|'snapshot_state'|'request_pacing'|'read_failure'|'pending_request'|'reconciliation_state';request_kind?:BrowserRequest['kind'];upstream_page?:number;total_upstream_attempts?:number;successful_upstream_reads?:number;rate_limit_streak?:number;request_id?:string;operation_id?:string;response_classification?:'http_rate_limit'|'service_error'|'network_failure';response_metadata?:ResponseDiagnostics}

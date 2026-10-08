@@ -1,6 +1,7 @@
 import {responseDiagnostics,type ResponseDiagnostics} from './diagnostics.js';
-import {CookieJar} from 'tough-cookie';
-import {SafeError,type BrowserRequest,type Environment,type ProviderGate,type Transport} from './types.js';
+import {CookieJar,Cookie} from 'tough-cookie';
+import {ProviderErrorDetails,cookieSecrets} from './error-details.js';
+import {SafeError,ProviderResponseError,type BrowserRequest,type Environment,type ProviderGate,type Transport} from './types.js';
 import {validateConsumption} from './validation.js';
 import {backoffMs,cooldownSource,realClock,readRetryPolicy,retryAfterMs,retryFailure,type RetryClock} from './backoff.js';
 class TransientResponse extends Error {constructor(readonly code:string,readonly status:number,readonly delayMs:number|undefined,readonly metadata:ResponseDiagnostics){super(code);}}
@@ -26,8 +27,8 @@ export function buildRequest(r:BrowserRequest){
  return {path:`/bulkconsume.asp?Consumed=${Number(month)}%2F${Number(day)}%2F${year}&iConsumptionType=1&ConsumptionNote=${latin(r.details.note)}&Revenue=&RevenueCurrency=${r.currency}`,method:'POST',body:'BulkAction=&'+r.ids.map(id=>'iInventory='+id).join('&')};
 }
 export class CloudCookieTransport implements Transport {
- private requests=0;private successfulReads=0;private jar!:CookieJar;private userAgent='';private deadline=0;
- constructor(private env:Environment,private fetcher:typeof fetch=fetch,private clock:RetryClock=realClock,private gate?:ProviderGate){}
+ private requests=0;private successfulReads=0;private jar!:CookieJar;private userAgent='';private deadline=0;private diagnosticSecrets:string[]=[];
+ constructor(private env:Environment,private fetcher:typeof fetch=fetch,private clock:RetryClock=realClock,private gate?:ProviderGate,private errorDetails?:ProviderErrorDetails){}
  async init(){
   const deadline=Date.parse(this.env.CELLARTRACKER_SESSION_EXPIRES_AT??'');
   if(!Number.isFinite(deadline)||deadline<=this.clock.now())throw new SafeError('Cloud session is not activated or its approved expiry has passed. Renew it through the supported secure setup flow.');
@@ -49,6 +50,7 @@ export class CloudCookieTransport implements Transport {
   if(/[\r\n\0]/.test(cookie))throw new SafeError('[SESSION_COOKIE_FORBIDDEN_CHARACTERS] The cookie field must contain only the single-line Cookie request-header value, without line breaks or null characters.');
   if(/[\r\n\0]/.test(userAgent))throw new SafeError('[SESSION_USER_AGENT_FORBIDDEN_CHARACTERS] The userAgent field must contain only the single-line User-Agent request-header value, without line breaks or null characters.');
   this.jar=new CookieJar();this.userAgent=userAgent;
+  this.diagnosticSecrets=[...cookieSecrets(cookie),...(typeof(session as any).cookie==='string'?cookieSecrets((session as any).cookie):[])];
   try{
    for(const piece of cookie.split(/;\s*/)){if(!piece.includes('='))throw Error();await this.jar.setCookie(piece+'; Path=/; Secure',origin);}
   }catch{throw new SafeError('[SESSION_COOKIE_FORMAT] The cookie field must be the full Cookie request-header value as a supported JSON string, without the header name.');}
@@ -127,31 +129,37 @@ export class CloudCookieTransport implements Transport {
    }
    throw new SafeError('[CELLARTRACKER_FETCH_FAILED] The upstream request failed before an HTTP response was available. No automatic retry is allowed; inspect saved status if consumption was submitted.');
   }
-  // Close rejected/challenge response streams without inspecting their bodies.
-  if(response.status!==200||response.headers.get('cf-mitigated')==='challenge'){try{await response.body?.cancel();}catch{}}
+  const challenge=response.headers.get('cf-mitigated')==='challenge'||['challenge','captcha'].includes(response.headers.get('x-amzn-waf-action')??'');
+  let errorId:string|undefined,errorDetailsUnavailable=false;
+  if(response.status!==200||challenge){
+   if(this.errorDetails){
+    const secrets=[...this.diagnosticSecrets,...cookieSecrets(cookie),...(response.headers.getSetCookie?.()??[]).map(value=>Cookie.parse(value)?.value??'')];
+    try{errorId=await this.errorDetails.capture(response,request,secrets,controller.signal);}catch{errorDetailsUnavailable=true;try{await response.body?.cancel();}catch{}}
+   }else try{await response.body?.cancel();}catch{}
+  }
   // Never follow redirects or expose their destinations, nor accept their cookies/body.
   if(response.status>=300&&response.status<400){
    let signIn=false;
    try{const destination=new URL(response.headers.get('location')??'',url);signIn=destination.origin===origin&&destination.pathname.toLowerCase()==='/login.asp';}catch{}
-   if(signIn){await this.gate?.block?.('CELLARTRACKER_AUTHENTICATION_REQUIRED');throw new SafeError('[CELLARTRACKER_AUTHENTICATION_REQUIRED] CellarTracker redirected this request to its sign-in page. It was not followed. Renew the session only through the approved user-only secure flow.');}
-   throw new SafeError('[CELLARTRACKER_UNEXPECTED_REDIRECT] CellarTracker returned a redirect. It was not followed. Authentication or the fixed endpoint may require review.');
+   if(signIn){await this.gate?.block?.('CELLARTRACKER_AUTHENTICATION_REQUIRED');throw new ProviderResponseError('[CELLARTRACKER_AUTHENTICATION_REQUIRED] CellarTracker redirected this request to its sign-in page. It was not followed. Renew the session only through the approved user-only secure flow.',response.status,errorId);}
+   throw new ProviderResponseError('[CELLARTRACKER_UNEXPECTED_REDIRECT] CellarTracker returned a redirect. It was not followed. Authentication or the fixed endpoint may require review.',response.status,errorId);
   }
   if(response.redirected||(response.url&&response.url!==url))throw new SafeError('[CELLARTRACKER_ENDPOINT_CHANGED] The response did not remain on the exact approved endpoint. It was rejected.');
-  if(response.headers.get('cf-mitigated')==='challenge'){
+  if(challenge){
    if(response.status===429){const delay=retryAfterMs(response.headers.get('retry-after'),this.clock.now());if(this.gate?.rateLimited)await this.gate.rateLimited(delay,response.headers.has('retry-after'));else await this.gate?.record(this.clock.now()+(delay??15*60000),delay===undefined?'fallback':'provider_retry_after');}
    await this.gate?.block?.('CELLARTRACKER_BROWSER_CHALLENGE');
-   throw new SafeError('[CELLARTRACKER_BROWSER_CHALLENGE] The upstream service requires a browser challenge for this cloud request. No challenge bypass or automatic retry is attempted.');
+   throw new ProviderResponseError('[CELLARTRACKER_BROWSER_CHALLENGE] The upstream service requires a browser challenge for this cloud request. No challenge bypass or automatic retry is attempted.',response.status,errorId);
   }
-  if(response.status===401){await this.gate?.block?.('CELLARTRACKER_AUTHENTICATION_REQUIRED');throw new SafeError('[CELLARTRACKER_AUTHENTICATION_REQUIRED] CellarTracker rejected this request as unauthenticated. Renew the session only through the approved user-only secure flow.');}
-  if(response.status===403){await this.gate?.block?.('CELLARTRACKER_ACCESS_DENIED');throw new SafeError('[CELLARTRACKER_ACCESS_DENIED] CellarTracker denied the cloud request. The response does not establish whether the account session or cloud access was rejected.');}
+  if(response.status===401){await this.gate?.block?.('CELLARTRACKER_AUTHENTICATION_REQUIRED');throw new ProviderResponseError('[CELLARTRACKER_AUTHENTICATION_REQUIRED] CellarTracker rejected this request as unauthenticated. Renew the session only through the approved user-only secure flow.',response.status,errorId);}
+  if(response.status===403){await this.gate?.block?.('CELLARTRACKER_ACCESS_DENIED');throw new ProviderResponseError('[CELLARTRACKER_ACCESS_DENIED] CellarTracker denied the cloud request. The response does not establish whether the account session or cloud access was rejected.',response.status,errorId);}
   if(response.status===429||(response.status>=500&&response.status<=599)){
    const delay=retryAfterMs(response.headers.get('retry-after'),this.clock.now());
-   // Error bodies and refresh cookies are never consumed or accepted on failed attempts.
+   // Failed-response cookies are never accepted. Bounded redacted diagnostics use owner-only storage.
    try{await response.body?.cancel();}catch{}
-   throw new TransientResponse(response.status===429?'CELLARTRACKER_RATE_LIMITED':'CELLARTRACKER_SERVICE_ERROR',response.status,delay,responseDiagnostics(response.headers,delay));
+   throw new TransientResponse(response.status===429?'CELLARTRACKER_RATE_LIMITED':'CELLARTRACKER_SERVICE_ERROR',response.status,delay,{...responseDiagnostics(response.headers,delay),...(errorId?{body_retained:true,error_details_id:errorId}:{}),...(errorDetailsUnavailable?{error_details_unavailable:true}:{})});
   }
-  if(response.status!==200)throw new SafeError('[CELLARTRACKER_HTTP_ERROR] CellarTracker returned an unexpected HTTP response. It was rejected.');
-  for(const value of response.headers.getSetCookie?.()??[])await this.jar.setCookie(value,url,{ignoreError:true});
+  if(response.status!==200)throw new ProviderResponseError('[CELLARTRACKER_HTTP_ERROR] CellarTracker returned an unexpected HTTP response. It was rejected.',response.status,errorId);
+  for(const value of response.headers.getSetCookie?.()??[]){await this.jar.setCookie(value,url,{ignoreError:true});const secret=Cookie.parse(value)?.value;if(secret)this.diagnosticSecrets.push(secret);}
   // Refresh cookies stay in memory for this call. No credential is stored in D1 or exposed through tools.
   const reader=response.body?.getReader();const parts:Uint8Array[]=[];let length=0;
   try{if(reader)while(true){const {done,value}=await reader.read();if(done)break;length+=value.byteLength;if(length>2_000_000){await reader.cancel();throw new SafeError('CellarTracker response exceeds the supported size.');}parts.push(value);}}

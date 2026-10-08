@@ -45,3 +45,8 @@ export const reconciliationReads=sqliteTable('reconciliation_reads',{
  startedAt:integer('started_at').notNull(),expiresAt:integer('expires_at').notNull(),
  leaseId:text('lease_id'),leaseUntil:integer('lease_until').notNull().default(0)
 },t=>[primaryKey({columns:[t.owner,t.operationId]})]);
+// Owner-only redacted error responses: bounded body/headers, one-hour retention.
+export const providerErrorDetails=sqliteTable('provider_error_details',{
+ id:text('id').primaryKey(),owner:text('owner').notNull(),accountId:text('account_id').notNull(),
+ createdAt:integer('created_at').notNull(),expiresAt:integer('expires_at').notNull(),body:text('body').notNull()
+},t=>[index('provider_errors_owner_time').on(t.owner,t.createdAt)]);

@@ -39,6 +39,12 @@ export function parseInventory(html: string) {
 
 export class CellarTracker implements ConsumptionCellar {
   constructor(private transport: Transport) {}
+  async verifyConnection(){
+    const response=await this.transport.request({kind:'inventory',page:1});this.checkResponse(response.status,response.url);
+    const data=parseInventory(response.text);
+    if(data.page!==1||!Number.isInteger(data.pages)||data.pages<1||data.pages>100||data.bottles.length>data.total||new Set(data.bottles.map(b=>b.id)).size!==data.bottles.length||(data.pages===1&&data.bottles.length!==data.total))throw new SafeError('First inventory page is inconsistent. Account verification failed.');
+    return {accountId:data.accountId,total:data.total,pages:data.pages};
+  }
   async inventory(): Promise<Inventory> {
     const bottles: Bottle[] = [];
     let expected: ReturnType<typeof parseInventory> | undefined;
