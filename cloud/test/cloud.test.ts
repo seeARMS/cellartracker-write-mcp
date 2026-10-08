@@ -10,9 +10,9 @@ async function rpc(method:string,params:any={},env:any={},user:string|null='owne
  const req=new Request('https://synthetic.invalid/mcp',{method:'POST',headers:{'content-type':'application/json',...(user?{'oai-authenticated-user-id':user}:{})},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});
  return worker.fetch(req,env);
 }
-test('stateless initialization and discovery expose eleven bounded tools',async()=>{
+test('stateless initialization and discovery expose twelve bounded tools',async()=>{
  const init=await(await rpc('initialize',{protocolVersion:'2025-06-18'})).json()as any;assert.equal(init.result.protocolVersion,'2025-06-18');
- const list=await(await rpc('tools/list')).json()as any;assert.equal(list.result.tools.length,11);assert.ok(!JSON.stringify(list).includes('CELLARTRACKER_SESSION_JSON'));
+ const list=await(await rpc('tools/list')).json()as any;assert.equal(list.result.tools.length,12);assert.ok(!JSON.stringify(list).includes('CELLARTRACKER_SESSION_JSON'));
  assert.equal((await worker.fetch(new Request('https://synthetic.invalid/mcp'),{})).status,405);
 });
 test('private-data tool calls reject missing identity and another user with HTTP 401/403',async()=>{

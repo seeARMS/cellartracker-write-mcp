@@ -21,12 +21,12 @@ function fixture(t:any){
 const req=()=>({request_id:crypto.randomUUID(),bottle_ids:['1'],date:'2026-10-02',note:''});
 const ownerRequest=(owner='owner')=>new Request('https://fixture.invalid/mcp',{method:'POST',headers:{'oai-authenticated-user-id':owner}});
 const limited=(now:number)=>retryFailure('CELLARTRACKER_RATE_LIMITED',429,1,now+60000,now,'fallback',{error_origin:'upstream_http'});
-test('429 circuit persists increasing waits across new transports and resets only after 24 quiet hours',async t=>{
+test('429 circuit preserves a fixed manual fallback across restarts; streak remains diagnostic until 24 quiet hours',async t=>{
  const f=fixture(t);let calls=0;
  const fetcher=(async()=>{calls++;return new Response('SYNTHETIC_PRIVATE_BODY',{status:429});})as typeof fetch;
  for(let i=0;i<8;i++){
   const before=f.clock.now();const transport=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();
-  let retryAt=0;await assert.rejects(()=>transport.request({kind:'inventory',page:1}),e=>{assert.ok(e instanceof RetryError);assert.equal(e.metadata.rate_limit_streak,i+1);assert.equal(e.metadata.automatic_retry_allowed,false);assert.equal(e.metadata.response_classification,'http_rate_limit');retryAt=Date.parse(e.metadata.retry_at);assert.equal(retryAt-before,Math.min(6*3600000,900000*2**i));return true;});
+  let retryAt=0;await assert.rejects(()=>transport.request({kind:'inventory',page:1}),e=>{assert.ok(e instanceof RetryError);assert.equal(e.metadata.rate_limit_streak,i+1);assert.equal(e.metadata.automatic_retry_allowed,false);assert.equal(e.metadata.response_classification,'http_rate_limit');retryAt=Date.parse(e.metadata.retry_at);assert.equal(retryAt-before,900000);return true;});
   const restarted=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();await assert.rejects(()=>restarted.request({kind:'consumed',page:1}),RetryError);assert.equal(calls,i+1);
   f.advance(retryAt-f.clock.now());
  }

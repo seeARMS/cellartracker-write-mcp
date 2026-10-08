@@ -46,7 +46,7 @@ test('429 from every endpoint persists a gate, including a single rejected POST'
  }
 });
 test('fallback versus provider source describes the effective cooldown without storing raw headers',async t=>{
- for(const [header,source,attempts]of [[undefined,'fallback',1],['invalid '+marker,'fallback',1],['2','fallback',1],['1800','provider_retry_after',1],[new Date(initial+1800000).toUTCString(),'provider_retry_after',1]]as const){
+ for(const [header,source,attempts]of [[undefined,'fallback',1],['invalid '+marker,'fallback',1],['2','provider_retry_after',1],['1800','provider_retry_after',1],[new Date(initial+1800000).toUTCString(),'provider_retry_after',1]]as const){
   const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);let calls=0;
   const transport=await new CloudCookieTransport(f.env,(async()=>{calls++;return new Response(marker,{status:429,headers:header?{'retry-after':header}:undefined});})as typeof fetch,f.clock,f.gate()).init();
   await assert.rejects(()=>transport.request({kind:'inventory',page:1}),e=>{assert.ok(e instanceof RetryError);assert.equal(e.metadata.cooldown_source,source);assert.equal(e.metadata.attempts,attempts);assert.ok(!JSON.stringify(e.metadata).includes(marker));return true;});assert.equal(calls,attempts);
@@ -60,7 +60,7 @@ test('the first 429 stops and records a gate; deliberate read continuation succe
  const transport=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();
  await assert.rejects(()=>transport.request({kind:'inventory',page:1}),e=>e instanceof RetryError&&e.metadata.attempts===1&&e.metadata.error_origin==='upstream_http');assert.equal(calls,1);assert.deepEqual(f.sleeps,[]);
  await assert.rejects(()=>f.gate().assertAvailable(),e=>e instanceof RetryError&&e.metadata.error_origin==='saved_provider_cooldown'&&e.metadata.upstream_status===undefined);
- f.advance(900501);const deliberate=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();assert.equal((await deliberate.request({kind:'inventory',page:1})).text,'ok');assert.equal(calls,2);
+ f.advance(2001);const deliberate=await new CloudCookieTransport(f.env,fetcher,f.clock,f.gate()).init();assert.equal((await deliberate.request({kind:'inventory',page:1})).text,'ok');assert.equal(calls,2);
 });
 test('atomic upsert preserves the longest cooldown across concurrent Workers and snapshot deletion',async t=>{
  const db=new SqliteD1();t.after(()=>db.close());const f=fixture(db);

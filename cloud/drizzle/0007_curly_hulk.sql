@@ -1,0 +1,1 @@
+ALTER TABLE `provider_cooldowns` ADD `retry_after_until` integer;

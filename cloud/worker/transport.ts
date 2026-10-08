@@ -87,12 +87,12 @@ export class CloudCookieTransport implements Transport {
     const delay=backoffMs(attempt,transient?error.delayMs:undefined,this.clock.random());
     // A 429 opens the durable circuit. Resume on a later invocation, never before Retry-After.
     const exhausted=status===429||!read||attempt>=readRetryPolicy.maxAttempts||this.clock.now()+delay+1>=deadline;
-    const wait=exhausted?Math.max(status===429?15*60000:60000,delay):delay;
+    const wait=status===429?(transient?error.delayMs:undefined)??15*60000:exhausted?Math.max(60000,delay):delay;
     let retryAt=this.clock.now()+wait;
-    let source=cooldownSource(attempt,transient?error.delayMs:undefined,exhausted);
+    let source=status===429?(transient&&error.delayMs!==undefined?'provider_retry_after':'fallback'):cooldownSource(attempt,transient?error.delayMs:undefined,exhausted);
     let streak:number|undefined;
     if(status===429){
-     const circuit=await this.gate?.rateLimited?.(transient?error.delayMs:undefined);
+     const circuit=await this.gate?.rateLimited?.(transient?error.delayMs:undefined,transient?error.metadata.retry_after_present:false);
      if(circuit){retryAt=circuit.retryAt;source=circuit.source;streak=circuit.streak;}
      else await this.gate?.record(retryAt,source);
     }else if(exhausted)await this.gate?.record(retryAt,source,code);
@@ -138,7 +138,7 @@ export class CloudCookieTransport implements Transport {
   }
   if(response.redirected||(response.url&&response.url!==url))throw new SafeError('[CELLARTRACKER_ENDPOINT_CHANGED] The response did not remain on the exact approved endpoint. It was rejected.');
   if(response.headers.get('cf-mitigated')==='challenge'){
-   if(response.status===429){const delay=retryAfterMs(response.headers.get('retry-after'),this.clock.now());if(this.gate?.rateLimited)await this.gate.rateLimited(delay);else await this.gate?.record(this.clock.now()+Math.max(15*60000,delay??0),'fallback');}
+   if(response.status===429){const delay=retryAfterMs(response.headers.get('retry-after'),this.clock.now());if(this.gate?.rateLimited)await this.gate.rateLimited(delay,response.headers.has('retry-after'));else await this.gate?.record(this.clock.now()+(delay??15*60000),delay===undefined?'fallback':'provider_retry_after');}
    await this.gate?.block?.('CELLARTRACKER_BROWSER_CHALLENGE');
    throw new SafeError('[CELLARTRACKER_BROWSER_CHALLENGE] The upstream service requires a browser challenge for this cloud request. No challenge bypass or automatic retry is attempted.');
   }

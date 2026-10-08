@@ -16,9 +16,9 @@ test('upgrade from deployed v6 preserves operation history, reservations, and pr
 test('upgrade from v9 adds read checkpoints without changing an unresolved submission or its locks',()=>{
  const db=new DatabaseSync(':memory:');try{
   db.exec('PRAGMA foreign_keys=ON');const migrations=readdirSync('drizzle').filter(n=>n.endsWith('.sql')).sort();
-  for(const name of migrations.slice(0,-1))db.exec(readFileSync('drizzle/'+name,'utf8'));
+  for(const name of migrations.slice(0,6))db.exec(readFileSync('drizzle/'+name,'utf8'));
   db.exec("INSERT INTO operations(id,owner,request_key,fingerprint,account_id,body,status,created_at,expires_at,submitted_at) VALUES('submitted','owner','request','fingerprint','123','{}','submitted',1,2,1); INSERT INTO account_locks(owner,operation_id) VALUES('owner','submitted'); INSERT INTO bottle_claims(owner,account_id,bottle_id,operation_id) VALUES('owner','123','1','submitted'); INSERT INTO provider_cooldowns(owner,account_id,retry_at,source) VALUES('owner','123',9999999999999,'fallback');");
-  const before=JSON.stringify(db.prepare('SELECT * FROM operations').all());db.exec(readFileSync('drizzle/'+migrations.at(-1),'utf8'));
+  const before=JSON.stringify(db.prepare('SELECT * FROM operations').all());for(const name of migrations.slice(6))db.exec(readFileSync('drizzle/'+name,'utf8'));
   assert.equal(JSON.stringify(db.prepare('SELECT * FROM operations').all()),before);
   assert.equal(db.prepare('SELECT count(*) AS n FROM account_locks').get()!.n,1);assert.equal(db.prepare('SELECT count(*) AS n FROM bottle_claims').get()!.n,1);
   assert.equal(db.prepare('SELECT retry_at FROM provider_cooldowns').get()!.retry_at,9999999999999);

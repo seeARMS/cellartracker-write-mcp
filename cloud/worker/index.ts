@@ -31,7 +31,7 @@ function identity(request:Request,env:Environment,requireOwner=true){
  if(requireOwner&&(!env.CELLARTRACKER_OWNER_USER_ID||user!==env.CELLARTRACKER_OWNER_USER_ID))throw new AccessError('Cloud owner binding is missing or does not match this signed-in user.',403);
  return user;
 }
-function setupStatus(env:Environment){return {reads_enabled:env.CELLARTRACKER_READS_ENABLED==='true',writes_enabled:env.CELLARTRACKER_WRITES_ENABLED==='true',owner_bound:!!env.CELLARTRACKER_OWNER_USER_ID,account_bound:/^\d+$/.test(env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??''),session_configured:!!env.CELLARTRACKER_SESSION_JSON,approved_session_expiry_valid:Number.isFinite(Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT??''))&&Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!)>Date.now(),storage_ready:!!env.DB,transport:'direct-https',adapter_version:'0.2.0',retry_policy:'conservative-manual-v3',authenticated_inventory_verified:false};}
+function setupStatus(env:Environment){return {reads_enabled:env.CELLARTRACKER_READS_ENABLED==='true',writes_enabled:env.CELLARTRACKER_WRITES_ENABLED==='true',owner_bound:!!env.CELLARTRACKER_OWNER_USER_ID,account_bound:/^\d+$/.test(env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??''),session_configured:!!env.CELLARTRACKER_SESSION_JSON,approved_session_expiry_valid:Number.isFinite(Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT??''))&&Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!)>Date.now(),storage_ready:!!env.DB,transport:'direct-https',adapter_version:'0.2.0',retry_policy:'conservative-manual-v4',authenticated_inventory_verified:false};}
 export async function callTool(request:Request,env:Environment,name:string,args:Record<string,any>,fetcher:typeof fetch=fetch,clock:RetryClock=realClock){
  const tool=tools.find(t=>t.name===name);if(!tool)throw new SafeError('Unknown CellarTracker tool.');validate(tool.inputSchema,args);
  if(name==='connection_status'){
@@ -42,6 +42,10 @@ export async function callTool(request:Request,env:Environment,name:string,args:
  if(name==='execute_consumption'&&env.CELLARTRACKER_WRITES_ENABLED!=='true')throw new SafeError('Cloud consumption is disabled. It requires separate activation approval and a specific bottle-consumption instruction.');
  const account=env.CELLARTRACKER_EXPECTED_ACCOUNT_ID;
  if(name!=='verify_connection'&&!/^\d+$/.test(account??''))throw new SafeError('Bind the approved CellarTracker account before reading cellar data or planning consumption.');
+ if(name==='shorten_app_rate_limit_wait'){
+  if(!env.DB)throw new SafeError('Cloud provider storage is unavailable.');
+  return new ProviderCooldown(env.DB,owner,account!,clock).shortenFallback(args.last_rate_limit_at,args.retry_at,args.reviewed_no_retry_after);
+ }
  if(['queue_consumption_request','get_consumption_request'].includes(name)){
   if(!env.DB)throw new SafeError('Cloud operation storage is unavailable.');
   const store=new CloudStore(env.DB,owner,clock);
