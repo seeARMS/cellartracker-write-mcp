@@ -5,6 +5,7 @@ export interface Operation {
  id:string;owner:string;requestKey:string;fingerprint:string;accountId:string;
  bottles:Bottle[];details:ConsumptionDetails;status:string;createdAt:number;expiresAt:number;
  submittedAt?:number;observation?:Observation;checkingToken?:string;checkingUntil?:number;
+ planHistoryDeferred?:boolean;
 }
 export interface Observation {consumedIds:string[];remainingIds:string[];conflictIds:string[];message?:string;retry?:RetryMetadata;submission_error?:{error_code:string}}
 export class CloudStore {

@@ -4,7 +4,7 @@ import {validateConsumption} from './validation.js';
 import {CloudStore,type Operation,type Observation} from './store.js';
 import {RetryError,SafeError,type ConsumptionCellar,type Inventory,type ConsumptionHistory} from './types.js';
 export interface PlanInput extends BottleSelection {request_id:string;date:string;note?:string}
-export function summarize(op:Operation){return {operation_id:op.id,request_id:op.requestKey,status:op.status,dry_run:op.submittedAt===undefined,created_at:new Date(op.createdAt).toISOString(),expires_at:new Date(op.expiresAt).toISOString(),bottles:op.bottles,quantity:op.bottles.length,date:op.details.date,reason:'drank',note:op.details.note,...(op.observation?{verification:op.observation}:{})};}
+export function summarize(op:Operation){return {operation_id:op.id,request_id:op.requestKey,status:op.status,dry_run:op.submittedAt===undefined,created_at:new Date(op.createdAt).toISOString(),expires_at:new Date(op.expiresAt).toISOString(),bottles:op.bottles,quantity:op.bottles.length,date:op.details.date,reason:'drank',note:op.details.note,...(op.planHistoryDeferred?{plan_history_check:'deferred_to_fresh_execution_preflight'}:{}),...(op.observation?{verification:op.observation}:{})};}
 export class CloudConsumption {
  constructor(private cellar:ConsumptionCellar,private store:CloudStore,private accountId:string,private clock:RetryClock=realClock){}
  private account(inv:{accountId:string}){if(inv.accountId!==this.accountId)throw new SafeError('CellarTracker account differs from the approved account binding. No write allowed.');}
@@ -17,10 +17,11 @@ export class CloudConsumption {
   const pending=await this.store.pending.prepare(input,fingerprint);
   try{
   const inventory=await this.cellar.inventory();this.account(inventory);
-  const bottles=selectBottles(inventory,input);const history=await this.cellar.consumed(bottles.map(b=>b.id));this.account(history);
-  if(history.records.length)throw new SafeError('A selected bottle already has consumption history. Reconcile it before planning.');
+  const bottles=selectBottles(inventory,input);
+  // Reserve a dry run only. Execution still requires fresh inventory AND history
+  // before the durable submission boundary; no cached history can authorize a POST.
   await this.store.pending.assertLease(input.request_id,pending.lease);
-  const now=this.clock.now();const op=await this.store.create({id:pending.id,owner:this.store.owner,requestKey:input.request_id,fingerprint,accountId:inventory.accountId,bottles,details,status:'planned',createdAt:now,expiresAt:now+15*60_000});
+  const now=this.clock.now();const op=await this.store.create({id:pending.id,owner:this.store.owner,requestKey:input.request_id,fingerprint,accountId:inventory.accountId,bottles,details,status:'planned',createdAt:now,expiresAt:now+15*60_000,planHistoryDeferred:true});
   await this.store.pending.finish(input.request_id,pending.lease);return summarize(op);
   }catch(error){
    await this.store.pending.finish(input.request_id,pending.lease,error);
