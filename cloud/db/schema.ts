@@ -38,3 +38,10 @@ export const pendingRequests=sqliteTable('pending_requests',{
  retryAt:integer('retry_at').notNull().default(0),attempts:integer('attempts').notNull().default(0),
  leaseId:text('lease_id'),leaseUntil:integer('lease_until').notNull().default(0),error:text('error')
 },t=>[primaryKey({columns:[t.owner,t.requestKey]})]);
+// Parsed read-only reconciliation progress; never usable as execution preflight.
+export const reconciliationReads=sqliteTable('reconciliation_reads',{
+ owner:text('owner').notNull(),operationId:text('operation_id').notNull().references(()=>operations.id),
+ scope:text('scope').notNull(),generationId:text('generation_id').notNull(),body:text('body').notNull(),
+ startedAt:integer('started_at').notNull(),expiresAt:integer('expires_at').notNull(),
+ leaseId:text('lease_id'),leaseUntil:integer('lease_until').notNull().default(0)
+},t=>[primaryKey({columns:[t.owner,t.operationId]})]);

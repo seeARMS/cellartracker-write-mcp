@@ -1,4 +1,5 @@
 import {sessionDiagnostics} from './diagnostics.js';
+import {ReconciliationReads} from './reconciliation.js';
 import {CellarTracker} from './cellar.js';
 import {CloudCookieTransport} from './transport.js';
 import {CloudStore} from './store.js';
@@ -63,7 +64,8 @@ export async function callTool(request:Request,env:Environment,name:string,args:
   const r=await env.DB.prepare('UPDATE provider_state SET blocked_code=NULL WHERE owner=? AND blocked_code=?').bind(owner,args.reviewed_error_code).run();
   return {review_acknowledged:r.meta.changes===1,cooldown_preserved:true,authenticated:false};
  }
- const cellar=new CellarTracker(await new CloudCookieTransport(env,fetcher,clock,gate).init());
+ const transport=await new CloudCookieTransport(env,fetcher,clock,gate).init();
+ const cellar=new CellarTracker(transport);
  if(!gate)throw new SafeError('Cloud provider cooldown storage is unavailable. No upstream request is permitted.');
  const snapshots=env.DB&&account?new InventorySnapshots(env.DB,owner,account,Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!),clock,gate):undefined;
  if(['verify_connection','list_bins','list_bottles'].includes(name)){
@@ -81,13 +83,13 @@ export async function callTool(request:Request,env:Environment,name:string,args:
   const offset=args.offset??0,limit=args.limit??50;return {total:bottles.length,offset,limit,bottles:bottles.slice(offset,offset+limit),snapshot:snapshot!.metadata};
  }
  if(!env.DB)throw new SafeError('Cloud operation storage is unavailable. No consumption can be submitted.');
+ if(name==='get_consumption_status')return new ReconciliationReads(env.DB,owner,account!,Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!),transport,gate,clock).status(args.operation_id,args.restart_reconciliation??false);
  const consumption=new CloudConsumption(cellar,new CloudStore(env.DB,owner,clock),account!,clock);
  if(name==='plan_consumption')return consumption.plan(args as any);
  if(name==='execute_consumption'){
   await snapshots!.invalidate();
   try{return await consumption.execute(args.operation_id);}finally{await snapshots!.invalidate();}
  }
- if(name==='get_consumption_status')return consumption.status(args.operation_id);
  if(name==='cancel_consumption_plan')return consumption.cancel(args.operation_id);
  throw new SafeError('Unknown CellarTracker operation.');
 }
