@@ -1,3 +1,4 @@
+import {assertAccess} from './access.js';
 import {responseDiagnostics,type ResponseDiagnostics} from './diagnostics.js';
 import {CookieJar,Cookie} from 'tough-cookie';
 import {ProviderErrorDetails,cookieSecrets} from './error-details.js';
@@ -30,8 +31,7 @@ export class CloudCookieTransport implements Transport {
  private requests=0;private successfulReads=0;private jar!:CookieJar;private userAgent='';private deadline=0;private diagnosticSecrets:string[]=[];
  constructor(private env:Environment,private fetcher:typeof fetch=fetch,private clock:RetryClock=realClock,private gate?:ProviderGate,private errorDetails?:ProviderErrorDetails){}
  async init(){
-  const deadline=Date.parse(this.env.CELLARTRACKER_SESSION_EXPIRES_AT??'');
-  if(!Number.isFinite(deadline)||deadline<=this.clock.now())throw new SafeError('Cloud session is not activated or its approved expiry has passed. Renew it through the supported secure setup flow.');
+  assertAccess(this.env,this.clock.now(),true);
   this.deadline=this.clock.now()+readRetryPolicy.operationTimeoutMs;
   let session:unknown;
   try{session=JSON.parse(this.env.CELLARTRACKER_SESSION_JSON??'');}
@@ -60,7 +60,7 @@ export class CloudCookieTransport implements Transport {
   const read=buildRequest(request).method==='GET';
   const deadline=Math.min(this.deadline,this.clock.now()+readRetryPolicy.maxElapsedMs);
   for(let attempt=1;;attempt++){
-   if(Date.parse(this.env.CELLARTRACKER_SESSION_EXPIRES_AT??'')<=this.clock.now())throw new SafeError('The approved session cutoff passed. No further upstream request is permitted.');
+   assertAccess(this.env,this.clock.now());
    let remaining=deadline-this.clock.now();
    if(remaining<=0)throw retryFailure('CELLARTRACKER_READ_DEADLINE',undefined,attempt-1,this.clock.now()+60000,this.clock.now());
    let lease:string|undefined;
@@ -71,7 +71,7 @@ export class CloudCookieTransport implements Transport {
    await this.gate?.assertAvailable();
    await this.gate?.pace?.(deadline);
    await this.gate?.assertAvailable();
-   if(Date.parse(this.env.CELLARTRACKER_SESSION_EXPIRES_AT??'')<=this.clock.now())throw new SafeError('The approved session cutoff passed. No further upstream request is permitted.');
+   assertAccess(this.env,this.clock.now());
    remaining=deadline-this.clock.now();
    if(remaining<=0)throw retryFailure('CELLARTRACKER_READ_DEADLINE',undefined,attempt-1,this.clock.now()+60000,this.clock.now());
     if(request.kind==='consume'&&request.expiresAt!==undefined&&request.expiresAt<=this.clock.now())throw new SafeError('[CELLARTRACKER_PLAN_EXPIRED] The plan expired while waiting for its provider slot. No POST was sent. Inspect the saved operation; do not resubmit it.');

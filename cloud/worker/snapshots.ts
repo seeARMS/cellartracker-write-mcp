@@ -5,7 +5,7 @@ interface Row {scope:string;snapshot_id:string|null;body:string|null;fetched_at:
 export interface Snapshot {inventory:Inventory;metadata:{snapshot_id:string;as_of:string;expires_at:string;cached:boolean;age_seconds:number;potentially_stale:boolean;read_only:true}}
 export class InventorySnapshots {
  private scope:string;
- constructor(private db:D1Database,private owner:string,private account:string,private sessionExpiry:number,private clock:RetryClock=realClock,private gate?:ProviderGate){this.scope=JSON.stringify([account,sessionExpiry]);}
+ constructor(private db:D1Database,private owner:string,private account:string,private sessionExpiry:number,private clock:RetryClock=realClock,private gate?:ProviderGate){this.scope=JSON.stringify([account,sessionExpiry===Infinity?'ongoing':sessionExpiry]);}
  private row(){return this.db.prepare('SELECT * FROM inventory_snapshots WHERE owner=?').bind(this.owner).first<Row>();}
  async invalidate(){await this.db.prepare('DELETE FROM inventory_snapshots WHERE owner=?').bind(this.owner).run();}
  async get(load:()=>Promise<Inventory>,snapshotId?:string):Promise<Snapshot>{

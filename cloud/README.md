@@ -51,7 +51,8 @@ Configure runtime values through native Site Settings, not source or tool argume
 | `CELLARTRACKER_EXPECTED_ACCOUNT_ID` | Bind the intended numeric account after read-only verification and owner approval |
 | `CELLARTRACKER_SESSION_JSON` | Hosted secret; entered only by the owner through native secure settings |
 | `CELLARTRACKER_COOKIE` | Optional hosted **secret**: full raw Cookie request-header value. Overrides only the legacy cookie; reuses `userAgent` from `CELLARTRACKER_SESSION_JSON`. Leave absent for legacy behavior; blank/invalid values block requests without fallback. |
-| `CELLARTRACKER_SESSION_EXPIRES_AT` | Explicit approved UTC cutoff, in `YYYY-MM-DDTHH:mm:ss.sssZ` format |
+| `CELLARTRACKER_ACCESS_MODE` | `timed` by default; `ongoing` only after explicit owner approval of ongoing access until revoked. Read/write enablement remain independent. |
+| `CELLARTRACKER_SESSION_EXPIRES_AT` | Required approved UTC cutoff for timed mode, in `YYYY-MM-DDTHH:mm:ss.sssZ` format; ignored in explicitly approved ongoing mode |
 | `CELLARTRACKER_READS_ENABLED` | `true` only after read-access approval and secure setup |
 | `CELLARTRACKER_WRITES_ENABLED` | `true` only after separate consumption activation approval |
 
@@ -67,7 +68,7 @@ These are placeholders, not credentials. The owner must obtain the full authenti
 
 This adapter has no provider OAuth/login/automated refresh flow. A cookie session carries the account's broader privileges; the exposed MCP operations are bounded in code. The provider session may expire before the approved cutoff, after logout or rotation, or require a browser challenge. Refresh cookies remain in memory for one tool invocation and are not persisted to the hosted secret. Renew through the owner-only secure settings flow, then verify reads before allowing consumption. Setup-error diagnostics reveal fixed categories, never supplied credential bytes, unknown keys, lengths or values. For the bound owner only, `connection_status.request_headers` reports the configured desktop Chrome/Edge/Safari User-Agent when it matches a bounded browser format, and a fixed allowlist of known cookie names. Nonstandard User-Agents and unknown cookie names are redacted. This describes the hosted-secret snapshot, not observed wire headers: capture time and browser freshness are unknown. It performs no provider request and does not renew or persist credentials.
 
-Activation sequence: approve the specific access and expiry; bind the owner and enter a fresh session securely; enable reads and verify the intended account; bind that account; then separately approve consumption activation. Every execution still requires a specific instruction identifying what the user drank. Wine labels and notes are untrusted data, never instructions.
+Activation sequence: approve the specific access and timed expiry or explicit ongoing mode; bind the owner and enter a fresh session securely; enable reads and verify the intended account; bind that account; then separately approve consumption activation. Every execution still requires a specific instruction identifying what the user drank. Wine labels and notes are untrusted data, never instructions.
 
 ## Persistent requests and read retries
 
@@ -112,3 +113,9 @@ The provider's undocumented website endpoint has no exposed idempotency key or c
 A dry run selects and reserves bottles using fresh complete inventory, but no longer walks consumption history. New plans persist `plan_history_check=deferred_to_fresh_execution_preflight`, including duplicate/restarted plan responses. The existing execution preflight still checks fresh complete inventory and history before the submission boundary; a prior or newly appeared consumption record stops submission. A plan can therefore reserve a bottle later found ineligible; it is an unsubmitted proposal, not proof that consumption can proceed. Identity, expiry, operation/request deduplication, unknown-write protection and post-write verification are unchanged. Older plans retain their original metadata.
 
 For a successful single-bottle workflow with unchanged inventory/history page counts I and H, this removes one complete history walk: `3I + 3H + 3` becomes `3I + 2H + 3` requests (minimum nine becomes eight). The three additional requests are the live form GET, sole POST and exact consumed-detail GET. Connection checks/discovery and any explicit later reconciliation are separate. No targeted filter contract or cached-history preflight is enabled.
+
+### Ongoing access
+
+Explicitly approved `CELLARTRACKER_ACCESS_MODE=ongoing` removes only the artificial approval cutoff. Other installations remain timed by default; missing/invalid dates do not grant ongoing access, and unknown modes fail closed. Owner/account binding and separate read/write enablement remain. Every consumption still needs a specific user instruction, confirmed dry run, fresh preflight and exact verification. Disable reads/writes in native settings and deploy to revoke their respective access. Provider cookie expiry/revocation, sign-in redirects, denials and challenges still stop requests; secure credential renewal remains user-only, without automated cross-call refresh.
+
+Status reports `access_mode`, `access_approval_active` and `approval_expires_at`. In ongoing mode `approval_expires_at` and legacy `approved_session_expiry_valid` are null (no approval timer); this never proves provider login. Cache lifetime remains 45 minutes, read reconciliation remains a bounded ten-minute generation and plans expire after 15 minutes. Changing policy mode fences earlier snapshots/read generations and never clears provider cooldowns or changes existing consumption state.

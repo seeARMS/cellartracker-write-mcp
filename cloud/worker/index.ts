@@ -1,3 +1,4 @@
+import {accessPolicy} from './access.js';
 import {sessionDiagnostics} from './diagnostics.js';
 import {ProviderErrorDetails} from './error-details.js';
 import {ReconciliationReads} from './reconciliation.js';
@@ -32,11 +33,15 @@ function identity(request:Request,env:Environment,requireOwner=true){
  if(requireOwner&&(!env.CELLARTRACKER_OWNER_USER_ID||user!==env.CELLARTRACKER_OWNER_USER_ID))throw new AccessError('Cloud owner binding is missing or does not match this signed-in user.',403);
  return user;
 }
-function setupStatus(env:Environment){return {reads_enabled:env.CELLARTRACKER_READS_ENABLED==='true',writes_enabled:env.CELLARTRACKER_WRITES_ENABLED==='true',owner_bound:!!env.CELLARTRACKER_OWNER_USER_ID,account_bound:/^\d+$/.test(env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??''),session_configured:!!env.CELLARTRACKER_SESSION_JSON,approved_session_expiry_valid:Number.isFinite(Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT??''))&&Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!)>Date.now(),storage_ready:!!env.DB,transport:'direct-https',adapter_version:'0.2.0',retry_policy:'conservative-manual-v4',authenticated_inventory_verified:false};}
+function setupStatus(env:Environment,now:number){
+ let policy;try{policy=accessPolicy(env);}catch{}
+ const active=!!policy&&(policy.mode==='ongoing'||Number.isFinite(policy.expiresAt)&&policy.expiresAt>now);
+ return {reads_enabled:env.CELLARTRACKER_READS_ENABLED==='true',writes_enabled:env.CELLARTRACKER_WRITES_ENABLED==='true',owner_bound:!!env.CELLARTRACKER_OWNER_USER_ID,account_bound:/^\d+$/.test(env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??''),session_configured:!!env.CELLARTRACKER_SESSION_JSON,access_mode:policy?.mode??'invalid',access_approval_active:active,approval_expires_at:policy?.mode==='timed'&&Number.isFinite(policy.expiresAt)?new Date(policy.expiresAt).toISOString():null,approved_session_expiry_valid:policy?.mode==='ongoing'?null:active,storage_ready:!!env.DB,transport:'direct-https',adapter_version:'0.2.0',retry_policy:'conservative-manual-v4',authenticated_inventory_verified:false};
+}
 export async function callTool(request:Request,env:Environment,name:string,args:Record<string,any>,fetcher:typeof fetch=fetch,clock:RetryClock=realClock){
  const tool=tools.find(t=>t.name===name);if(!tool)throw new SafeError('Unknown CellarTracker tool.');validate(tool.inputSchema,args);
  if(name==='connection_status'){
-  const owner=identity(request,env,!!env.CELLARTRACKER_OWNER_USER_ID);return {...setupStatus(env),...(env.CELLARTRACKER_OWNER_USER_ID?{request_headers:sessionDiagnostics(env.CELLARTRACKER_SESSION_JSON,env.CELLARTRACKER_COOKIE)}:{}),...(!env.CELLARTRACKER_OWNER_USER_ID?{caller_site_user_id:owner}:env.DB?{provider:await new ProviderCooldown(env.DB,owner,env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??'unbound',clock).status()}:{})};
+  const owner=identity(request,env,!!env.CELLARTRACKER_OWNER_USER_ID);return {...setupStatus(env,clock.now()),...(env.CELLARTRACKER_OWNER_USER_ID?{request_headers:sessionDiagnostics(env.CELLARTRACKER_SESSION_JSON,env.CELLARTRACKER_COOKIE)}:{}),...(!env.CELLARTRACKER_OWNER_USER_ID?{caller_site_user_id:owner}:env.DB?{provider:await new ProviderCooldown(env.DB,owner,env.CELLARTRACKER_EXPECTED_ACCOUNT_ID??'unbound',clock).status()}:{})};
  }
  const owner=identity(request,env);
  if(env.CELLARTRACKER_READS_ENABLED!=='true')throw new SafeError('Cloud CellarTracker access is disabled pending specific activation approval and secure session setup.');
@@ -82,7 +87,7 @@ export async function callTool(request:Request,env:Environment,name:string,args:
  const transport=await new CloudCookieTransport(env,fetcher,clock,gate,errorDetails).init();
  const cellar=new CellarTracker(transport);
  if(!gate)throw new SafeError('Cloud provider cooldown storage is unavailable. No upstream request is permitted.');
- const snapshots=env.DB&&account?new InventorySnapshots(env.DB,owner,account,Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!),clock,gate):undefined;
+ const snapshots=env.DB&&account?new InventorySnapshots(env.DB,owner,account,accessPolicy(env).expiresAt,clock,gate):undefined;
  if(['verify_connection','list_bins','list_bottles'].includes(name)){
   if(name==='verify_connection')await gate.assertAvailable();
   if(name!=='verify_connection'&&!snapshots)throw new SafeError('Inventory snapshot storage is unavailable. No upstream discovery refresh was started.');
@@ -102,7 +107,7 @@ export async function callTool(request:Request,env:Environment,name:string,args:
   const offset=args.offset??0,limit=args.limit??50;return {total:bottles.length,offset,limit,bottles:bottles.slice(offset,offset+limit),snapshot:snapshot!.metadata};
  }
  if(!env.DB)throw new SafeError('Cloud operation storage is unavailable. No consumption can be submitted.');
- if(name==='get_consumption_status')return new ReconciliationReads(env.DB,owner,account!,Date.parse(env.CELLARTRACKER_SESSION_EXPIRES_AT!),transport,gate,clock).status(args.operation_id,args.restart_reconciliation??false);
+ if(name==='get_consumption_status')return new ReconciliationReads(env.DB,owner,account!,accessPolicy(env).expiresAt,transport,gate,clock).status(args.operation_id,args.restart_reconciliation??false);
  const consumption=new CloudConsumption(cellar,new CloudStore(env.DB,owner,clock),account!,clock);
  if(name==='plan_consumption')return consumption.plan(args as any);
  if(name==='execute_consumption'){

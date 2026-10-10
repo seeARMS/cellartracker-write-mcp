@@ -63,7 +63,7 @@ export class ReconciliationReads {
   if(op.accountId!==this.account)throw new SafeError('[CELLARTRACKER_RECONCILIATION_CHANGED] Operation differs from the approved account.');
   if(this.clock.now()>=this.sessionExpiry)throw new SafeError('The approved session cutoff passed. No reconciliation request is permitted.');
   await this.gate.assertAvailable();
-  const scope=JSON.stringify([this.account,op.fingerprint,op.submittedAt??null,this.sessionExpiry]);let row=await this.row(id);const now=this.clock.now();
+  const scope=JSON.stringify([this.account,op.fingerprint,op.submittedAt??null,this.sessionExpiry===Infinity?'ongoing':this.sessionExpiry]);let row=await this.row(id);const now=this.clock.now();
   if(row&&!restart&&(row.scope!==scope||row.expires_at<=now))throw this.expired();
   const lease=crypto.randomUUID(),generation=crypto.randomUUID(),expiry=Math.min(now+reconciliationPolicy.workflowMs,this.sessionExpiry);
   if(!row||restart){
