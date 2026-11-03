@@ -1,5 +1,5 @@
 import {assertAccess} from './access.js';
-import {responseDiagnostics,type ResponseDiagnostics} from './diagnostics.js';
+import {providerScriptChallenge,responseDiagnostics,type ResponseDiagnostics} from './diagnostics.js';
 import {CookieJar,Cookie} from 'tough-cookie';
 import {ProviderErrorDetails,cookieSecrets} from './error-details.js';
 import {SafeError,ProviderResponseError,type BrowserRequest,type Environment,type ProviderGate,type Transport} from './types.js';
@@ -129,7 +129,7 @@ export class CloudCookieTransport implements Transport {
    }
    throw new SafeError('[CELLARTRACKER_FETCH_FAILED] The upstream request failed before an HTTP response was available. No automatic retry is allowed; inspect saved status if consumption was submitted.');
   }
-  const challenge=response.headers.get('cf-mitigated')==='challenge'||['challenge','captcha'].includes(response.headers.get('x-amzn-waf-action')??'');
+  const challenge=response.headers.get('cf-mitigated')==='challenge'||['challenge','captcha'].includes(response.headers.get('x-amzn-waf-action')??'')||providerScriptChallenge(response.headers,response.status);
   let errorId:string|undefined,errorDetailsUnavailable=false;
   if(response.status!==200||challenge){
    if(this.errorDetails){
@@ -156,7 +156,7 @@ export class CloudCookieTransport implements Transport {
    const delay=retryAfterMs(response.headers.get('retry-after'),this.clock.now());
    // Failed-response cookies are never accepted. Bounded redacted diagnostics use owner-only storage.
    try{await response.body?.cancel();}catch{}
-   throw new TransientResponse(response.status===429?'CELLARTRACKER_RATE_LIMITED':'CELLARTRACKER_SERVICE_ERROR',response.status,delay,{...responseDiagnostics(response.headers,delay),...(errorId?{body_retained:true,error_details_id:errorId}:{}),...(errorDetailsUnavailable?{error_details_unavailable:true}:{})});
+   throw new TransientResponse(response.status===429?'CELLARTRACKER_RATE_LIMITED':'CELLARTRACKER_SERVICE_ERROR',response.status,delay,{...responseDiagnostics(response.headers,delay,response.status),...(errorId?{body_retained:true,error_details_id:errorId}:{}),...(errorDetailsUnavailable?{error_details_unavailable:true}:{})});
   }
   if(response.status!==200)throw new ProviderResponseError('[CELLARTRACKER_HTTP_ERROR] CellarTracker returned an unexpected HTTP response. It was rejected.',response.status,errorId);
   for(const value of response.headers.getSetCookie?.()??[]){await this.jar.setCookie(value,url,{ignoreError:true});const secret=Cookie.parse(value)?.value;if(secret)this.diagnosticSecrets.push(secret);}

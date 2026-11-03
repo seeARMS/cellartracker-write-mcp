@@ -1,4 +1,5 @@
 import {parseInventory} from './cellar.js';
+import {runtimeStep} from './runtime-diagnostics.js';
 import {parseHistory,parseConsumptionDetails} from './history.js';
 import {summarize} from './consumption.js';
 import {CloudStore,type Operation,type Observation} from './store.js';
@@ -19,7 +20,7 @@ const initial=():Progress=>({phase:'inventory',nextPage:1,bottles:[],rows:[],det
 export class ReconciliationReads {
  private store:CloudStore;
  constructor(private db:D1Database,private owner:string,private account:string,private sessionExpiry:number,private transport:Transport,private gate:ProviderGate,private clock:RetryClock=realClock){this.store=new CloudStore(db,owner,clock);}
- private row(id:string){return this.db.prepare('SELECT * FROM reconciliation_reads WHERE owner=? AND operation_id=?').bind(this.owner,id).first<Checkpoint>();}
+ private row(id:string){return runtimeStep('reconciliation_checkpoint_read',()=>this.db.prepare('SELECT * FROM reconciliation_reads WHERE owner=? AND operation_id=?').bind(this.owner,id).first<Checkpoint>());}
  private expired(){return new SafeError('[CELLARTRACKER_RECONCILIATION_EXPIRED] Read evidence expired or its operation/account/session scope changed. Deliberately restart read-only reconciliation with restart_reconciliation=true; never replay consumption.');}
  private fenced(){return new SafeError('[CELLARTRACKER_RECONCILIATION_FENCED] This reader lost its lease. Its evidence was not accepted. Continue read-only reconciliation; never replay consumption.');}
  private metadata(row:Checkpoint,state:Progress,complete=false){return {generation_id:row.generation_id,phase:state.phase,next_page:state.phase==='inventory'||state.phase==='history'?state.nextPage:null,details_completed:state.details.length,as_of:new Date(row.started_at).toISOString(),expires_at:new Date(row.expires_at).toISOString(),complete,continuation_required:!complete,automatic_retry_allowed:false,submission_retry_allowed:false};}
@@ -67,12 +68,12 @@ export class ReconciliationReads {
   if(row&&!restart&&(row.scope!==scope||row.expires_at<=now))throw this.expired();
   const lease=crypto.randomUUID(),generation=crypto.randomUUID(),expiry=Math.min(now+reconciliationPolicy.workflowMs,this.sessionExpiry);
   if(!row||restart){
-   const saved=await this.db.prepare(`INSERT INTO reconciliation_reads(owner,operation_id,scope,generation_id,body,started_at,expires_at,lease_id,lease_until) VALUES(?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(owner,operation_id) DO UPDATE SET scope=excluded.scope,generation_id=excluded.generation_id,body=excluded.body,started_at=excluded.started_at,expires_at=excluded.expires_at,lease_id=excluded.lease_id,lease_until=excluded.lease_until WHERE reconciliation_reads.lease_until<=?`).bind(this.owner,id,scope,generation,this.encode(initial()),now,expiry,lease,Math.min(now+reconciliationPolicy.leaseMs,expiry),now).run();
+   const saved=await runtimeStep('reconciliation_checkpoint_restart',()=>this.db.prepare(`INSERT INTO reconciliation_reads(owner,operation_id,scope,generation_id,body,started_at,expires_at,lease_id,lease_until) VALUES(?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(owner,operation_id) DO UPDATE SET scope=excluded.scope,generation_id=excluded.generation_id,body=excluded.body,started_at=excluded.started_at,expires_at=excluded.expires_at,lease_id=excluded.lease_id,lease_until=excluded.lease_until WHERE reconciliation_reads.lease_until<=?`).bind(this.owner,id,scope,generation,this.encode(initial()),now,expiry,lease,Math.min(now+reconciliationPolicy.leaseMs,expiry),now).run());
    if(!saved.meta.changes){row=await this.row(id);throw retryFailure('CELLARTRACKER_RECONCILIATION_IN_PROGRESS',undefined,0,row!.lease_until,now,'fallback',{error_origin:'reconciliation_state',operation_id:id});}
    row=(await this.row(id))!;
   }else{
-   const acquired=await this.db.prepare('UPDATE reconciliation_reads SET lease_id=?,lease_until=? WHERE owner=? AND operation_id=? AND scope=? AND generation_id=? AND lease_until<=? AND expires_at>?').bind(lease,Math.min(now+reconciliationPolicy.leaseMs,row.expires_at),this.owner,id,scope,row.generation_id,now,now).run();
+   const acquired=await runtimeStep('reconciliation_checkpoint_acquire',()=>this.db.prepare('UPDATE reconciliation_reads SET lease_id=?,lease_until=? WHERE owner=? AND operation_id=? AND scope=? AND generation_id=? AND lease_until<=? AND expires_at>?').bind(lease,Math.min(now+reconciliationPolicy.leaseMs,row!.expires_at),this.owner,id,scope,row!.generation_id,now,now).run());
    if(!acquired.meta.changes)throw retryFailure('CELLARTRACKER_RECONCILIATION_IN_PROGRESS',undefined,0,row.lease_until,now,'fallback',{error_origin:'reconciliation_state',operation_id:id});
   }
   const state=JSON.parse(row.body)as Progress;
@@ -80,7 +81,7 @@ export class ReconciliationReads {
    while(state.phase!=='done'){
     // Leave room for the existing pacing/response deadline and checkpoint write.
     if(Math.min(callDeadline,row.expires_at)-this.clock.now()<readRetryPolicy.maxElapsedMs)break;
-    await this.read(state,op);await this.save(id,row,lease,state);
+    await runtimeStep('reconciliation_provider_read',()=>this.read(state,op));await runtimeStep('reconciliation_checkpoint_save',()=>this.save(id,row!,lease,state));
    }
    if(this.clock.now()>=row.expires_at)throw this.expired();
    if(state.phase!=='done'){

@@ -64,6 +64,13 @@
       "when": 1791434606251,
       "tag": "0008_greedy_moondragon",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1793718223834,
+      "tag": "0009_mark_script_challenges",
+      "breakpoints": true
     }
   ]
 }
