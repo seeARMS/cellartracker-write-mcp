@@ -138,7 +138,7 @@ test('exhausted 5xx cooldown is classified separately from an HTTP 429',async t=
 test('connection diagnostics report only saved fixed metadata and never contact the provider',async t=>{
  const f=fixture(t);await f.gate().rateLimited(1800000);let calls=0;
  const result=await callTool(ownerRequest(),f.env,'connection_status',{},(async()=>{calls++;throw Error('unexpected');})as typeof fetch,f.clock)as any;
- assert.equal(result.adapter_version,'0.2.0');assert.equal(result.provider.rate_limit_streak,1);assert.equal(result.provider.cooldown_source,'provider_retry_after');assert.equal(calls,0);assert.ok(!JSON.stringify(result).includes('fixture='));
+ assert.equal(result.adapter_version,'0.2.2');assert.equal(result.provider.rate_limit_streak,1);assert.equal(result.provider.cooldown_source,'provider_retry_after');assert.equal(calls,0);assert.ok(!JSON.stringify(result).includes('fixture='));
 });
 test('a completed operation cannot be downgraded by a late unresolved worker',async t=>{
  const f=fixture(t),p=await f.service().plan(req());assert.equal((await f.service().execute(p.operation_id)).status,'complete');

@@ -5,7 +5,7 @@ import {responseDiagnostics} from './diagnostics.js';
 
 export const errorDetailsPolicy={bodyBytes:32768,headerBytes:16384,retentionMs:3600000,maxRecords:10};
 const credentialField=/(?:password|passwd|pwhash|authorization|cookie|secret|tokens?|csrf|xsrf|apikey|accesskey|sessionkey|sessionid|credentials?)(?:value|confirmation)?$/i;
-const isCredentialField=(name:string)=>credentialField.test(name.replace(/[-_.]/g,''));
+const isCredentialField=(name:string)=>credentialField.test(name.replace(/[-_.]/g,''))||/^xkpsdk(?:ct|cd|im|fc|h)$/i.test(name.replace(/[-_.]/g,''));
 function trailingSecretPrefix(text:string,secret:string){
  const prefix=new Uint32Array(secret.length);for(let i=1,j=0;i<secret.length;i++){while(j&&secret[i]!==secret[j])j=prefix[j-1];if(secret[i]===secret[j])j++;prefix[i]=j;}
  let matched=0;for(const char of text){while(matched&&char!==secret[matched])matched=prefix[matched-1];if(char===secret[matched])matched++;if(matched===secret.length)matched=prefix[matched-1];}return matched;
@@ -68,7 +68,7 @@ export class ProviderErrorDetails {
    headers[name]=safe;headerBytes+=size;
   }
   const redacted=new TextEncoder().encode(redactErrorText(body,secrets));if(redacted.byteLength>errorDetailsPolicy.bodyBytes)truncated=true;
-  const data={error_id:id,recorded_at:new Date(now).toISOString(),expires_at:new Date(now+errorDetailsPolicy.retentionMs).toISOString(),status:response.status,request_kind:request.kind,...('page'in request?{page:request.page}:{}),headers,headers_truncated:headersTruncated,body:new TextDecoder().decode(redacted.subarray(0,errorDetailsPolicy.bodyBytes),{stream:true}),body_bytes_captured:bytes,body_truncated:truncated,body_read_failed:readError,response_metadata:{...responseDiagnostics(response.headers,undefined),body_retained:true},untrusted_provider_data:true};
+  const data={error_id:id,recorded_at:new Date(now).toISOString(),expires_at:new Date(now+errorDetailsPolicy.retentionMs).toISOString(),status:response.status,request_kind:request.kind,...('page'in request?{page:request.page}:{}),headers,headers_truncated:headersTruncated,body:new TextDecoder().decode(redacted.subarray(0,errorDetailsPolicy.bodyBytes),{stream:true}),body_bytes_captured:bytes,body_truncated:truncated,body_read_failed:readError,response_metadata:{...responseDiagnostics(response.headers,undefined,response.status),body_retained:true},untrusted_provider_data:true};
   await this.db.prepare('INSERT INTO provider_error_details(id,owner,account_id,created_at,expires_at,body) VALUES(?,?,?,?,?,?)').bind(id,this.owner,this.account,now,now+errorDetailsPolicy.retentionMs,JSON.stringify(data)).run();
   await this.purge();return id;
  }
@@ -76,6 +76,10 @@ export class ProviderErrorDetails {
   await this.purge();
   const row=await this.db.prepare(`SELECT body FROM provider_error_details WHERE owner=? AND account_id=? AND expires_at>?${id?' AND id=?':''} ORDER BY created_at DESC,id DESC LIMIT 1`).bind(this.owner,this.account,this.clock.now(),...(id?[id]:[])).first<{body:string}>();
   if(!row)throw new SafeError('No retained provider error matches this owner/account. Records expire after one hour; earlier categorical-only errors cannot be recovered.');
-  return JSON.parse(row.body);
+  // Reapply current redaction to older retained records as well as new captures.
+  const data=JSON.parse(row.body);
+  if(typeof data.body==='string')data.body=redactErrorText(data.body,[]);
+  if(data.headers&&typeof data.headers==='object')for(const [name,value]of Object.entries(data.headers))if(typeof value==='string')data.headers[name]=isCredentialField(name)?'[REDACTED]':redactErrorText(value,[]);
+  return data;
  }
 }

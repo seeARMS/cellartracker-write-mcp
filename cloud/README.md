@@ -35,7 +35,7 @@ npm run build
 npm run validate
 ```
 
-All inventory, authentication and consumption fixtures are synthetic. Tests make no live CellarTracker requests. The artifact exports Workers-compatible `default.fetch`. Schema-only Drizzle migrations are included; apply them through the supported hosting flow before Worker upload. There is no runtime schema mutation or seed data.
+All inventory, authentication and consumption fixtures are synthetic. Tests make no live CellarTracker requests. The artifact exports Workers-compatible `default.fetch`. Drizzle migrations are included; apply them through the supported hosting flow before Worker upload. Migration 0009 only promotes exact, unexpired retained script-challenge evidence to the existing provider-review pause. It preserves consumption history, pending requests, reservations and cooldowns. There is no runtime schema mutation or seed data.
 
 ## Private hosting and activation
 
@@ -119,3 +119,11 @@ For a successful single-bottle workflow with unchanged inventory/history page co
 Explicitly approved `CELLARTRACKER_ACCESS_MODE=ongoing` removes only the artificial approval cutoff. Other installations remain timed by default; missing/invalid dates do not grant ongoing access, and unknown modes fail closed. Owner/account binding and separate read/write enablement remain. Every consumption still needs a specific user instruction, confirmed dry run, fresh preflight and exact verification. Disable reads/writes in native settings and deploy to revoke their respective access. Provider cookie expiry/revocation, sign-in redirects, denials and challenges still stop requests; secure credential renewal remains user-only, without automated cross-call refresh.
 
 Status reports `access_mode`, `access_approval_active` and `approval_expires_at`. In ongoing mode `approval_expires_at` and legacy `approved_session_expiry_valid` are null (no approval timer); this never proves provider login. Cache lifetime remains 45 minutes, read reconciliation remains a bounded ten-minute generation and plans expire after 15 minutes. Changing policy mode fences earlier snapshots/read generations and never clears provider cooldowns or changes existing consumption state.
+
+## Runtime and script-challenge diagnostics (0.2.2)
+
+Saved request and reconciliation failures now identify a fixed stage and error category, without native exception text, SQL, stacks or credentials. Database causes are classified without enabling automatic retries. Stored submission state remains authoritative; no JSON body status can make a submitted operation executable again.
+
+An observed HTML HTTP 429 with both `x-kpsdk-r: 1-AA` and `x-kpsdk-ct` is treated as a provider script challenge, preserving its rate-limit cooldown and persisting `CELLARTRACKER_BROWSER_CHALLENGE` for owner review. This signal was accompanied by a `window.KPSDK`/`ips.js` verification page. No scripts are executed and no challenge is bypassed. Migration 0009 applies the same pause only to exact, unexpired retained response evidence (including those body markers), leaving every consumption, lock, pending request and cooldown unchanged. Ordinary 429s keep their existing cooldown behavior.
+
+Verification-token fields in these response headers and bodies are redacted on capture and when retrieving older retained errors. A saved challenge requires supported owner review before `resume_provider_reads`; cooldown expiry alone does not resume access.
